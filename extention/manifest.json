@@ -39,5 +39,16 @@
             "run_at": "document_idle",
             "all_frames": false
         }
+    ],
+    "web_accessible_resources": [
+        {
+            "resources": [
+                "answers.json"
+            ],
+            "matches": [
+                "https://hoathinh3d.gg/*",
+                "*://*.hoathinh3d.gg/*"
+            ]
+        }
     ]
 }

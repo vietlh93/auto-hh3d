@@ -117,7 +117,11 @@ if (window !== window.top) {
     async function postJson(endpoint, data = {}) {
         return request(endpoint, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: {
+                "Content-Type": "application/json",
+                "X-Requested-With": "XMLHttpRequest",
+                "X-WP-Nonce": CONFIG.nonces.wp
+            },
             body: JSON.stringify(data)
         });
     }
@@ -210,6 +214,7 @@ if (window !== window.top) {
         log(`   - Chest: ${CONFIG.nonces.chest || "❌"}`, CONFIG.nonces.chest ? "success" : "error");
         log(`   - Boss: ${CONFIG.nonces.boss || "❌"}`, CONFIG.nonces.boss ? "success" : "error");
         log(`   - TLTM: ${CONFIG.nonces.tltm || "❌"}`, CONFIG.nonces.tltm ? "success" : "warning");
+        log(`   - WP: ${CONFIG.nonces.wp || "❌"}`, CONFIG.nonces.wp ? "success" : "warning");
         log(`   - Token: ${CONFIG.nonces.securityToken ? "✓ OK" : "❌"}`, CONFIG.nonces.securityToken ? "success" : "error");
 
         if (!CONFIG.nonces.chest) log("⚠️ Không có Chest nonce - Worker Chest sẽ lỗi!", "error");
@@ -372,7 +377,7 @@ if (window !== window.top) {
             try {
                 const boss = await postForm(CONFIG.endpoints.api, { action: "get_boss", nonce: CONFIG.nonces.boss });
                 if (!boss?.success || !boss.data?.id) {
-                    const errMsg = boss?.message || boss?.data?.message || JSON.stringify(boss) || "Không có response";
+                    const errMsg = boss?.message || boss?.data?.message || boss?.data?.error || JSON.stringify(boss) || "Không có response";
                     if (errMsg.includes("hết lượt") || errMsg.includes("hoàn thành")) {
                         log("🛡️ ✅ Đã hoàn thành Boss Hoang Vực hôm nay", "success");
                         await sleep(getMsUntilMidnight() + 5000);
@@ -384,12 +389,14 @@ if (window !== window.top) {
                 }
 
                 const bossId = boss.data.id;
+                log(`🛡️ Lấy boss thành công – ID: ${bossId}, tên: ${boss.data.name || "?"}`, "info");
+
                 const timeResp = await postForm(CONFIG.endpoints.api, { action: "get_next_attack_time" });
                 if (timeResp?.success) {
                     const nextTs = Number(timeResp.data);
                     if (nextTs > Date.now()) {
                         const wait = nextTs - Date.now() + 1000;
-                        log(`🛡️ Chờ ${Math.ceil(wait / 1000)}s`, "info");
+                        log(`🛡️ Chưa tới giờ attack – đợi ${Math.ceil(wait / 1000)}s`, "info");
                         await sleep(wait);
                         continue;
                     }
@@ -403,17 +410,26 @@ if (window !== window.top) {
                     request_id: genRequestId()
                 });
 
-                if (result?.success) log("🛡️ Attack thành công", "success");
-                else {
-                    const msg = result?.message || "";
-                    if (msg.includes("hết lượt")) {
+                if (result?.success) {
+                    log("🛡️ Attack thành công", "success");
+                } else {
+                    const msg = result?.message || result?.data?.error || "";
+                    if (msg.includes("hết lượt") || msg.includes("hết lượt tấn công")) {
                         log("🛡️ ✅ Đã hoàn thành hôm nay", "success");
                         await sleep(getMsUntilMidnight() + 5000);
-                    } else if (msg.includes("nhận thưởng")) {
-                        await postForm(CONFIG.endpoints.claimboss, { action: "claim_chest", nonce: CONFIG.nonces.boss });
-                        log("🛡️ Đã nhận thưởng boss cũ", "success");
+                    } else if (msg.includes("nhận thưởng từ boss cũ") || msg.includes("nhận thưởng")) {
+                        log("🛡️ Đang nhận thưởng từ boss cũ...", "info");
+                        const claimResult = await postForm(CONFIG.endpoints.claimboss, { action: "claim_chest", nonce: CONFIG.nonces.boss });
+                        if (claimResult?.success) {
+                            log(`🛡️ Nhận thưởng thành công: ${claimResult?.message || ""}`, "success");
+                        } else {
+                            log(`🛡️ Nhận thưởng thất bại: ${claimResult?.message || JSON.stringify(claimResult)}`, "error");
+                        }
+                        log("🛡️ Sẽ thử attack lại ngay...", "info");
+                        await sleep(2000);
+                        continue;
                     } else {
-                        log(`🛡️ ${msg}`, "warning");
+                        log(`🛡️ Attack thất bại: ${msg}`, "warning");
                         await sleep(CONFIG.delays.error);
                     }
                 }
@@ -426,22 +442,41 @@ if (window !== window.top) {
 
     async function runBossTongMonWorker() {
         log("⚔️ [Boss TM] Started", "info");
-        if (!CONFIG.nonces.tltm) { log("⚔️ Chưa có nonce", "warning"); return; }
+        if (!CONFIG.nonces.tltm) {
+            log("⚔️ Không có TLTM security (có thể chưa mở Tông Môn) → Worker bị vô hiệu hóa", "warning");
+            return;
+        }
         while (isRunning) {
             try {
                 const info = await postJson(`${CONFIG.endpoints.tongMon}/check-attack-cooldown`);
-                if (info?.cooldown_type === "daily_limit" || info?.remaining_attacks === 0) {
-                    log("⚔️ ✅ Đã hoàn thành hôm nay", "success");
+
+                if (!info?.success) {
+                    log("⚔️ Lỗi check cooldown", "warning");
+                    await sleep(CONFIG.delays.error);
+                    continue;
+                }
+
+                if (info.cooldown_type === "daily_limit" || info.remaining_attacks === 0) {
+                    log("⚔️ ✅ Hết lượt trong ngày – chờ đến 0h", "success");
                     await sleep(getMsUntilMidnight() + 5000);
                     continue;
                 }
-                if (info?.can_attack) {
+
+                if (info.can_attack === true) {
+                    log(`⚔️ Có thể tấn công ngay (${info.remaining_attacks} lượt còn lại)`, "info");
                     const result = await postJson(`${CONFIG.endpoints.tongMon}/attack-boss`);
-                    if (result?.success) log(`⚔️ Attack: ${result.message}`, "success");
-                    else log(`⚔️ ${result?.message}`, "warning");
+
+                    if (result?.success) {
+                        log(`⚔️ Attack thành công: ${result.message} | HP: ${result.boss_hp}/${result.boss_max_hp}`, "success");
+                    } else {
+                        log(`⚔️ Attack thất bại: ${result?.message || "Unknown"}`, "warning");
+                    }
+
                     await sleep(CONFIG.delays.check);
                 } else {
-                    await sleep((info?.cooldown_interval || 30) * 1000 + 1000);
+                    const cd = (info.cooldown_interval || 30) * 1000;
+                    log(`⚔️ Cooldown ${info.cooldown_interval}s, còn ${info.remaining_attacks} lượt`, "info");
+                    await sleep(cd + 1000);
                 }
             } catch (e) {
                 log(`⚔️ Error: ${e.message}`, "error");
@@ -460,9 +495,12 @@ if (window !== window.top) {
                     await sleep(CONFIG.delays.check);
                 } else {
                     const msg = result?.message || "";
-                    if (msg.includes("hết lượt") || msg.includes("hoàn thành")) {
+                    if (msg.includes("hết lượt") || msg.includes("đã hết lượt")) {
                         log("🎡 ✅ Đã hoàn thành hôm nay", "success");
                         await sleep(getMsUntilMidnight() + 5000);
+                    } else if (msg.includes("Cần tối thiểu") && msg.includes("Tu Vi")) {
+                        log("🎡 ⚠️ Không đủ Tu Vi để quay - Dừng worker", "warning");
+                        return;
                     } else {
                         log(`🎡 ${msg}`, "warning");
                         await sleep(CONFIG.delays.error);
@@ -481,29 +519,50 @@ if (window !== window.top) {
         while (isRunning) {
             try {
                 const check = await postForm(CONFIG.endpoints.api, {
-                    action: "get_next_time_tltm",
+                    action: "get_remaining_time_tltm",
                     security_token: CONFIG.nonces.securityToken,
                     security: CONFIG.nonces.tltm
                 });
 
                 if (check?.success) {
-                    const waitMs = parseTime(check.data?.time);
+                    const { time_remaining } = check.data || {};
+
+                    // Check time_remaining undefined
+                    if (time_remaining === undefined) {
+                        log("💎 time_remaining undefined, retry...", "warning");
+                        await sleep(CONFIG.delays.error);
+                        continue;
+                    }
+
+                    const waitMs = parseTime(time_remaining);
                     if (waitMs === 0) {
                         const result = await postForm(CONFIG.endpoints.api, {
                             action: "open_chest_tltm",
                             security_token: CONFIG.nonces.securityToken,
                             security: CONFIG.nonces.tltm
                         });
-                        if (result?.success) log(`💎 Mở rương: ${result.data?.message || 'OK'}`, "success");
-                        else log(`💎 ${result?.message}`, "warning");
+
+                        // Check message hoàn thành sau khi mở rương
+                        const resultMsg = result?.data?.message || result?.message || "";
+                        if (resultMsg.includes("hoàn thành Thí Luyện Tông Môn") || resultMsg.includes("quay lại vào ngày kế tiếp")) {
+                            log("💎 ✅ Đã hoàn thành hôm nay", "success");
+                            await sleep(getMsUntilMidnight() + 5000);
+                            continue;
+                        }
+
+                        if (result?.success) {
+                            log(`💎 Mở rương: ${result.data?.message || 'OK'}`, "success");
+                        } else {
+                            log(`💎 Mở rương thất bại: ${result?.message || "Unknown"}`, "warning");
+                        }
                         await sleep(2000);
                     } else {
-                        log(`💎 Chờ ${check.data?.time}`, "info");
+                        log(`💎 ${time_remaining} → đợi ${Math.ceil(waitMs / 1000)}s`, "info");
                         await sleep(waitMs + 1000);
                     }
                 } else {
-                    const msg = check?.message || "";
-                    if (msg.includes("hoàn thành")) {
+                    const msg = check?.data?.message || check?.message || "";
+                    if (msg.includes("hoàn thành Thí Luyện Tông Môn") || msg.includes("quay lại vào ngày kế tiếp")) {
                         log("💎 ✅ Đã hoàn thành hôm nay", "success");
                         await sleep(getMsUntilMidnight() + 5000);
                     } else {
@@ -520,22 +579,160 @@ if (window !== window.top) {
 
     async function runLuanVoWorker() {
         log("⚔️ [Luận Võ] Started", "info");
+
+        if (!CONFIG.nonces.securityToken) {
+            log("⚔️ Không có security token → Worker bị vô hiệu hóa", "warning");
+            return;
+        }
+
+        const luanVoEndpoint = CONFIG.endpoints.luanVo;
+
+        // 1. Tham gia Luận Võ
+        log("⚔️ Đang tham gia Luận Võ...", "info");
+        const joinResult = await postJson(`${luanVoEndpoint}/join-battle`, {
+            action: "join_battle",
+            security_token: CONFIG.nonces.securityToken
+        });
+
+        if (!joinResult?.success) {
+            log(`⚔️ Tham gia Luận Võ: ${joinResult?.message || "Unknown error"}`, "error");
+        } else {
+            log(`⚔️ Tham gia thành công: ${joinResult.message || ""}`, "success");
+        }
+
+        // 2. Bật tự động chấp nhận khiêu chiến
+        log("⚔️ Đang bật tự động chấp nhận khiêu chiến...", "info");
+        let autoAcceptResult = await postJson(`${luanVoEndpoint}/toggle-auto-accept`);
+        if (autoAcceptResult?.message?.toLowerCase().includes("đã tắt")) {
+            autoAcceptResult = await postJson(`${luanVoEndpoint}/toggle-auto-accept`);
+        }
+        if (autoAcceptResult?.success) {
+            log(`⚔️ ${autoAcceptResult.message || "Đã bật auto-accept"}`, "success");
+        } else {
+            log(`⚔️ Cảnh báo: ${autoAcceptResult?.message || "Không thể bật auto-accept"}`, "warning");
+        }
+
+        // 3. Main loop - Tìm đối thủ và thách đấu
         while (isRunning) {
             try {
-                const info = await postJson(`${CONFIG.endpoints.luanVo}/check-match-cooldown`);
-                if (info?.cooldown_type === "daily_limit" || info?.remaining_matches === 0) {
-                    log("⚔️ ✅ Đã hoàn thành Luận Võ hôm nay", "success");
-                    await sleep(getMsUntilMidnight() + 5000);
+                log("⚔️ Đang tải danh sách người chơi...", "info");
+                const participants = await postJson(`${luanVoEndpoint}/load-participants`, { page: 1 });
+
+                if (!participants?.success || !participants?.data?.users) {
+                    log("⚔️ Không thể tải danh sách người chơi", "warning");
+                    await sleep(CONFIG.delays.error);
                     continue;
                 }
-                if (info?.can_match) {
-                    const result = await postJson(`${CONFIG.endpoints.luanVo}/start-match`);
-                    if (result?.success) log(`⚔️ Luận Võ: ${result.message}`, "success");
-                    else log(`⚔️ ${result?.message}`, "warning");
-                    await sleep(CONFIG.delays.check);
-                } else {
-                    await sleep((info?.cooldown_interval || 30) * 1000 + 1000);
+
+                const users = participants.data.users;
+                log(`⚔️ Tìm thấy ${users.length} người chơi`, "info");
+
+                // Lọc những người bật auto-accept
+                const autoAcceptUsers = users.filter(user => user.auto_accept === true);
+
+                if (autoAcceptUsers.length === 0) {
+                    log("⚔️ Không tìm thấy người chơi nào bật auto-accept", "warning");
+                    await sleep(CONFIG.delays.error);
+                    continue;
                 }
+
+                log(`⚔️ Tìm thấy ${autoAcceptUsers.length} người chơi bật auto-accept`, "info");
+
+                let challengeSuccess = false;
+
+                // Thử gửi thách đấu đến từng người
+                for (let i = 0; i < autoAcceptUsers.length; i++) {
+                    if (!isRunning) return;
+
+                    const target = autoAcceptUsers[i];
+                    log(`⚔️ Đang gửi thách đấu đến: ${target.name} (ID: ${target.id}) - ${target.points} điểm`, "info");
+
+                    const challengeResult = await postJson(`${luanVoEndpoint}/send-challenge`, {
+                        target_user_id: String(target.id)
+                    });
+
+                    if (!challengeResult?.success) {
+                        const errorMsg = challengeResult?.data || challengeResult?.message || "";
+
+                        // Check hết lượt
+                        if (errorMsg.includes("tối đa") || errorMsg.includes("hết lượt") || errorMsg.includes("đã gửi")) {
+                            log(`⚔️ Hết lượt: ${errorMsg}`, "warning");
+
+                            // Nhận thưởng trước khi dừng
+                            log("⚔️ Đang nhận thưởng Luận Võ...", "info");
+                            const rewardResult = await postJson(`${luanVoEndpoint}/receive-reward`, {});
+
+                            if (rewardResult?.success && rewardResult?.data) {
+                                log(`⚔️ Nhận thưởng thành công: ${rewardResult.data.message || ""}`, "success");
+                            } else {
+                                log(`⚔️ Không thể nhận thưởng: ${rewardResult?.data || rewardResult?.message || "Unknown"}`, "warning");
+                            }
+
+                            log("⚔️ ✅ Đã hoàn thành Luận Võ hôm nay - Chờ đến 0h", "success");
+                            await sleep(getMsUntilMidnight() + 5000);
+                            return;
+                        }
+
+                        // Check không cùng cấp bậc
+                        if (errorMsg.includes("không cùng cấp bậc") || errorMsg.includes("cấp bậc")) {
+                            log(`⚔️ Không cùng cấp với ${target.name}, thử người tiếp theo...`, "warning");
+                            await sleep(2000);
+                            continue;
+                        }
+
+                        log(`⚔️ Gửi thách đấu thất bại: ${errorMsg}`, "warning");
+                        await sleep(CONFIG.delays.error);
+                        continue;
+                    }
+
+                    // Gửi thách đấu thành công
+                    if (challengeResult?.data) {
+                        const { challenge_id, target_user_id, message } = challengeResult.data;
+                        log(`⚔️ Gửi thách đấu thành công: ${message || ""}`, "success");
+
+                        // Auto approve challenge
+                        log(`⚔️ Đang tự động chấp nhận trận đấu (ID: ${challenge_id})...`, "info");
+                        const approveResult = await postJson(`${luanVoEndpoint}/auto-approve-challenge`, {
+                            target_user_id: target_user_id,
+                            challenge_id: challenge_id
+                        });
+
+                        if (approveResult?.success && approveResult?.data) {
+                            const { message: resultMsg, is_winner, received_remaining } = approveResult.data;
+
+                            // Xử lý kết quả thắng/thua
+                            let finalWinState = false;
+                            if (typeof is_winner === 'boolean') finalWinState = is_winner;
+                            else if (Number(is_winner) === 1) finalWinState = true;
+                            else if (String(is_winner).toLowerCase() === 'true') finalWinState = true;
+
+                            // Check nội dung message để sửa lại nếu API trả sai
+                            const msgLower = (resultMsg || "").toLowerCase();
+                            if (msgLower.includes("thiếu một chút") || msgLower.includes("đáng tiếc") || msgLower.includes("thua")) {
+                                finalWinState = false;
+                            } else if (msgLower.includes("chiến thắng") || msgLower.includes("chúc mừng")) {
+                                finalWinState = true;
+                            }
+
+                            const status = finalWinState ? "Thắng ✓" : "Thua ✗";
+                            log(`⚔️ ${status} - ${resultMsg} (Còn ${received_remaining} lượt)`, finalWinState ? "success" : "info");
+                        } else {
+                            log(`⚔️ Lỗi khi tự động chấp nhận: ${approveResult?.data || approveResult?.message || "Unknown"}`, "warning");
+                        }
+
+                        challengeSuccess = true;
+                        break;
+                    }
+                }
+
+                if (!challengeSuccess) {
+                    log("⚔️ Đã thử hết danh sách người chơi nhưng không thể gửi thách đấu", "warning");
+                    await sleep(6000);
+                } else {
+                    log("⚔️ Đợi 6 giây trước khi tìm đối thủ tiếp theo...", "info");
+                    await sleep(6000);
+                }
+
             } catch (e) {
                 log(`⚔️ Error: ${e.message}`, "error");
                 await sleep(CONFIG.delays.error);
@@ -543,29 +740,127 @@ if (window !== window.top) {
         }
     }
 
-    async function runVanDapWorker() {
-        log("❓ [Vấn Đáp] Started", "info");
+    // ============= VẤN ĐÁP ANSWERS DATA =============
+    let VANDAP_ANSWERS = null;
+
+    // Hàm load answers từ file JSON
+    async function loadVanDapAnswers() {
+        if (VANDAP_ANSWERS) return true; // Đã load rồi
+
         try {
-            const quiz = await postForm(CONFIG.endpoints.api, {
-                action: "get_quiz_questions",
-                security_token: CONFIG.nonces.securityToken
+            const url = chrome.runtime.getURL('answers.json');
+            const response = await fetch(url);
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            VANDAP_ANSWERS = await response.json();
+            log(`❓ Đã tải ${Object.keys(VANDAP_ANSWERS).length} câu trả lời từ answers.json`, "success");
+            return true;
+        } catch (e) {
+            log(`❓ Lỗi khi tải answers.json: ${e.message}`, "error");
+            return false;
+        }
+    }
+
+    // Hàm chuẩn hóa chuỗi để so sánh
+    function normalizeString(str) {
+        if (!str) return "";
+        return str.toString()
+            .toLowerCase()
+            .normalize("NFC")
+            .replace(/[.,;?!:"'()]+/g, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    // Hàm tìm đáp án đúng
+    function findAnswer(question, options) {
+        if (!VANDAP_ANSWERS) return 0;
+
+        let rawAnswer = VANDAP_ANSWERS[question];
+
+        if (!rawAnswer) {
+            const normQuestion = normalizeString(question);
+            const foundKey = Object.keys(VANDAP_ANSWERS).find(k => {
+                const normKey = normalizeString(k);
+                return normKey === normQuestion || normKey.includes(normQuestion) || normQuestion.includes(normKey);
             });
 
-            if (!quiz?.success || !quiz.data?.questions) {
-                log(`❓ Không có câu hỏi hoặc đã hoàn thành`, "warning");
+            if (foundKey) {
+                rawAnswer = VANDAP_ANSWERS[foundKey];
+                log(`❓ ⚠️ Tìm thấy câu hỏi gần đúng: "${foundKey}"`, "info");
+            }
+        }
+
+        if (!rawAnswer) {
+            log(`❓ Không tìm thấy đáp án cho: ${question}`, "warning");
+            log(`❓ Sẽ chọn đáp án mặc định: 0`, "info");
+            return 0;
+        }
+
+        const searchKey = normalizeString(rawAnswer);
+        const answerIndex = options.findIndex(opt => {
+            const optNorm = normalizeString(opt);
+            return optNorm === searchKey || optNorm.includes(searchKey) || searchKey.includes(optNorm);
+        });
+
+        if (answerIndex === -1) {
+            log(`❓ Không tìm thấy đáp án "${rawAnswer}" trong options`, "warning");
+            return 0;
+        }
+
+        return answerIndex;
+    }
+
+    async function runVanDapWorker() {
+        log("❓ [Vấn Đáp] Started", "info");
+        if (!CONFIG.nonces.tltm) {
+            log("❓ Không có security TLTM → Không chạy vấn đáp", "warning");
+            return;
+        }
+
+        try {
+            // Load answers từ file JSON
+            log("❓ Đang tải dữ liệu câu trả lời...", "info");
+            const loadedAnswers = await loadVanDapAnswers();
+            if (!loadedAnswers) {
+                log("❓ Không thể tải file answers.json → Dừng worker", "error");
                 return;
             }
 
-            const questions = quiz.data.questions;
-            log(`❓ Có ${questions.length} câu hỏi`, "info");
+            log("❓ Đang tải câu hỏi vấn đáp...", "info");
+            const quizData = await postForm(CONFIG.endpoints.api, {
+                action: "load_quiz_data",
+                security_token: CONFIG.nonces.securityToken
+            });
+
+            if (!quizData?.success || !quizData?.data?.questions) {
+                log(`❓ Không có câu hỏi hoặc lỗi: ${quizData?.message || JSON.stringify(quizData)}`, "warning");
+                return;
+            }
+
+            const { questions, correct_answers, completed } = quizData.data;
+
+            if (completed) {
+                log(`❓ ✅ Đã hoàn thành vấn đáp hôm nay! Số câu đúng: ${correct_answers}`, "success");
+                await sleep(getMsUntilMidnight() + 5000);
+                return;
+            }
+
+            log(`❓ Có ${questions.length} câu hỏi. Đã trả lời đúng: ${correct_answers || 0} câu`, "info");
 
             for (const q of questions) {
                 if (!isRunning) break;
                 const { id, question, options } = q;
-                log(`❓ Câu #${id}: ${question}`, "info");
 
-                // Default chọn đáp án 0
-                const answerIndex = 0;
+                log(`❓ --- Câu hỏi #${id} ---`, "info");
+                log(`❓ ${question}`, "info");
+
+                const answerIndex = findAnswer(question, options);
+                const selectedAnswer = options[answerIndex];
+                log(`❓ Đáp án tìm được: ${answerIndex}. ${selectedAnswer}`, "info");
+
+                log(`❓ Đang gửi câu trả lời...`, "info");
                 const result = await postForm(CONFIG.endpoints.api, {
                     action: "save_quiz_result",
                     question_id: id,
@@ -578,11 +873,12 @@ if (window !== window.top) {
                 } else if (result?.success && result?.data?.is_correct === 2) {
                     log(`❓ ✗ Sai: ${result.data.message}`, "warning");
                 } else {
-                    log(`❓ Lỗi: ${result?.message || "Unknown"}`, "error");
+                    log(`❓ Lỗi: ${result?.message || result?.data?.message || "Unknown"}`, "error");
                 }
                 await sleep(1000);
             }
-            log(`❓ ✅ Đã hoàn thành trả lời`, "success");
+            log(`❓ ✅ Đã hoàn thành trả lời ${questions.length} câu hỏi!`, "success");
+            await sleep(getMsUntilMidnight() + 5000);
         } catch (e) {
             log(`❓ Error: ${e.message}`, "error");
         }
@@ -590,20 +886,36 @@ if (window !== window.top) {
 
     async function runTeLeWorker() {
         log("🙏 [Tế Lễ] Started", "info");
-        if (!CONFIG.nonces.tltm) { log("🙏 Chưa có nonce", "warning"); return; }
+        if (!CONFIG.nonces.tltm) {
+            log("🙏 Không có security TLTM (có thể chưa mở Tông Môn) → Worker bị vô hiệu hóa", "warning");
+            return;
+        }
         while (isRunning) {
             try {
                 const check = await postJson(`${CONFIG.endpoints.tongMon}/check-te-le-status`);
+
                 if (check?.success === false && check?.message?.includes("chưa tế lễ")) {
-                    const result = await postJson(`${CONFIG.endpoints.tongMon}/te-le`);
-                    if (result?.success) log(`🙏 Tế Lễ: ${result.message}`, "success");
-                    else log(`🙏 ${result?.message}`, "warning");
-                    await sleep(CONFIG.delays.check);
+                    log("🙏 Phát hiện chưa tế lễ, đang tiến hành tế lễ...", "info");
+
+                    const result = await postJson(`${CONFIG.endpoints.tongMon}/te-le-tong-mon`, {
+                        action: "te_le_tong_mon",
+                        security_token: CONFIG.nonces.securityToken
+                    });
+
+                    if (result?.success) {
+                        log(`🙏 Thành công: ${result.message}`, "success");
+                        log(`🙏 Cống hiến: ${result.cong_hien_points} | Tông khố: ${result.treasury}`, "success");
+                    } else {
+                        log(`🙏 Thất bại: ${result?.message || JSON.stringify(result)}`, "warning");
+                    }
+
+                    log("🙏 Đã tế lễ xong - Chờ đến 0h", "success");
+                    await sleep(getMsUntilMidnight() + 5000);
                 } else if (check?.success === true) {
-                    log(`🙏 Đã tế lễ hoặc không cần`, "success");
+                    log(`🙏 Trạng thái: ${check?.message || "Đã tế lễ hoặc không cần tế lễ"}`, "success");
                     await sleep(getMsUntilMidnight() + 5000);
                 } else {
-                    log(`🙏 Check status: ${check?.message || JSON.stringify(check)}`, "warning");
+                    log(`🙏 Check status thất bại: ${check?.message || JSON.stringify(check)}`, "warning");
                     await sleep(CONFIG.delays.error);
                 }
             } catch (e) {

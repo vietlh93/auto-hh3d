@@ -64,4 +64,5 @@ Nếu gặp lỗi:
 
 **v1.0.0** - Phiên bản đầu tiên
 - Tự tin mà phệt nhé các đậu hũ
+- https://t.me/doandaihiep2911
 

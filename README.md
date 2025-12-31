@@ -30,7 +30,6 @@ Extension tự động hóa các tác vụ hàng ngày trên **hoathinh3d.gg**, 
 ### Bước 3: Đăng nhập website
 1. Truy cập **hoathinh3d.gg**
 2. Đăng nhập tài khoản của bạn
-3. Click icon extension và nhấn **Kiểm tra Cookie** để xác nhận
 
 ## 🚀 Sử dụng
 
@@ -64,7 +63,5 @@ Nếu gặp lỗi:
 ## 📝 Version
 
 **v1.0.0** - Phiên bản đầu tiên
-- Chuyển đổi từ Node.js script
-- Sử dụng Chrome cookies API
-- Giao diện popup hiện đại
+- Tự tin mà phệt nhé các đậu hũ
 

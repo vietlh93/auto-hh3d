@@ -2,14 +2,21 @@
     "manifest_version": 3,
     "name": "HH3D Auto Tool",
     "version": "1.0.0",
-    "description": "Tự động hóa các tác vụ trên hoathinh3d.gg",
+    "description": "Tự động hóa các tác vụ trên hoathinh3d",
     "permissions": [
         "storage",
         "tabs"
     ],
     "host_permissions": [
-        "https://hoathinh3d.gg/*",
-        "*://*.hoathinh3d.gg/*"
+        "*://*.hoathinh3d.li/*",
+        "*://*.hoathinh3d.gg/*",
+        "*://*.hoathinh3d.vn/*",
+        "*://*.hoathinh3d.com/*",
+        "*://*.hoathinh3d.net/*",
+        "*://*.hoathinh3d.org/*",
+        "*://*.hoathinh3d.io/*",
+        "*://*.hoathinh3d.tv/*",
+        "*://*.hoathinh3d.cc/*"
     ],
     "background": {
         "service_worker": "background.js"
@@ -30,8 +37,15 @@
     "content_scripts": [
         {
             "matches": [
-                "https://hoathinh3d.gg/*",
-                "*://*.hoathinh3d.gg/*"
+                "*://*.hoathinh3d.li/*",
+                "*://*.hoathinh3d.gg/*",
+                "*://*.hoathinh3d.vn/*",
+                "*://*.hoathinh3d.com/*",
+                "*://*.hoathinh3d.net/*",
+                "*://*.hoathinh3d.org/*",
+                "*://*.hoathinh3d.io/*",
+                "*://*.hoathinh3d.tv/*",
+                "*://*.hoathinh3d.cc/*"
             ],
             "js": [
                 "content.js"
@@ -46,8 +60,15 @@
                 "answers.json"
             ],
             "matches": [
-                "https://hoathinh3d.gg/*",
-                "*://*.hoathinh3d.gg/*"
+                "*://*.hoathinh3d.li/*",
+                "*://*.hoathinh3d.gg/*",
+                "*://*.hoathinh3d.vn/*",
+                "*://*.hoathinh3d.com/*",
+                "*://*.hoathinh3d.net/*",
+                "*://*.hoathinh3d.org/*",
+                "*://*.hoathinh3d.io/*",
+                "*://*.hoathinh3d.tv/*",
+                "*://*.hoathinh3d.cc/*"
             ]
         }
     ]

@@ -11,7 +11,7 @@ if (window !== window.top) {
     console.log('🐉 HH3D Auto Tool - Content Script loaded');
 
     const CONFIG = {
-        baseUrl: "https://hoathinh3d.gg",
+        baseUrl: window.location.origin, // Tự động lấy domain hiện tại
         endpoints: {
             api: "/wp-content/themes/halimmovies-child/hh3d-ajax.php",
             tongMon: "/wp-json/tong-mon/v1",
@@ -23,7 +23,6 @@ if (window !== window.top) {
         pages: {
             chest: "/phuc-loi-duong",
             boss: "/hoang-vuc",
-            tltm: "/thi-luyen-tong-mon-hh3d",
             wp: "/bi-canh-tong-mon",
             mining: "/khoang-mach"
         },
@@ -31,7 +30,6 @@ if (window !== window.top) {
             chest: null,
             boss: null,
             wp: null,
-            tltm: null,
             securityToken: null,
             userid: null,
             securityTokenMiner: null,
@@ -155,7 +153,11 @@ if (window !== window.top) {
                 /'securityToken'\s*:\s*'([A-Za-z0-9+/=%]{30,})'/i,
                 /securityToken["\s:]+["']([A-Za-z0-9+/=%]{30,})["']/i,
             ],
-            userid: [/hh3dData\.userId\s*=\s*["']?(\d+)["']?/i, /"userId"\s*:\s*(\d+)/i],
+            userid: [
+                /hh3dData\.userId\s*=\s*["']?(\d+)["']?/i,
+                /"userId"\s*:\s*"(\d+)"/i,
+                /"userId"\s*:\s*(\d+)/i
+            ],
             chest: [
                 /open_chest_pl[^}]*security["\s:]+["']([a-f0-9]{10})["']/i,
                 /phuc_loi[^}]*security["\s:]+["']([a-f0-9]{10})["']/i,
@@ -166,11 +168,6 @@ if (window !== window.top) {
                 /\.ajax\([^)]*attack_boss[^)]*nonce["\':=\s]+["']([a-f0-9]{10})["']/i,
                 /boss[_-]?nonce["\':=\s]+["']([a-f0-9]{10})["']/i,
                 /nonce["\':=\s]+["']([a-f0-9]{10})["']/i
-            ],
-            tltm: [
-                /open_chest_tltm[^}]*security["\s:]+["']([a-f0-9]{10})["']/i,
-                /tltm_security["\s:]+["']([a-f0-9]{10})["']/i,
-                /"security":"([a-f0-9]{10})"/i
             ],
             wp: [
                 /wpApiSettings\s*=\s*{[^}]*nonce\s*:\s*"([a-f0-9]{10})"/i,
@@ -186,13 +183,6 @@ if (window !== window.top) {
             CONFIG.nonces.userid = extractSecurity(home, patterns.userid);
         }
 
-        const chestPage = await fetchPage(CONFIG.pages.chest);
-        CONFIG.nonces.chest = extractSecurity(chestPage, patterns.chest);
-        if (!CONFIG.nonces.securityToken && chestPage) {
-            CONFIG.nonces.securityToken = extractSecurity(chestPage, patterns.securityToken);
-            if (CONFIG.nonces.securityToken) CONFIG.nonces.securityToken = decodeURIComponent(CONFIG.nonces.securityToken);
-        }
-
         const bossPage = await fetchPage(CONFIG.pages.boss);
         CONFIG.nonces.boss = extractSecurity(bossPage, patterns.boss);
         if (!CONFIG.nonces.securityToken && bossPage) {
@@ -200,24 +190,15 @@ if (window !== window.top) {
             if (CONFIG.nonces.securityToken) CONFIG.nonces.securityToken = decodeURIComponent(CONFIG.nonces.securityToken);
         }
 
-        const tltmPage = await fetchPage(CONFIG.pages.tltm);
-        CONFIG.nonces.tltm = extractSecurity(tltmPage, patterns.tltm);
-        if (!CONFIG.nonces.securityToken && tltmPage) {
-            CONFIG.nonces.securityToken = extractSecurity(tltmPage, patterns.securityToken);
-            if (CONFIG.nonces.securityToken) CONFIG.nonces.securityToken = decodeURIComponent(CONFIG.nonces.securityToken);
-        }
-
         const wpPage = await fetchPage(CONFIG.pages.wp);
         CONFIG.nonces.wp = extractSecurity(wpPage, patterns.wp);
 
         log(`✅ Nonces loaded:`, "success");
-        log(`   - Chest: ${CONFIG.nonces.chest || "❌"}`, CONFIG.nonces.chest ? "success" : "error");
+        log(`   - User ID: ${CONFIG.nonces.userid || "❌"}`, CONFIG.nonces.userid ? "success" : "error");
         log(`   - Boss: ${CONFIG.nonces.boss || "❌"}`, CONFIG.nonces.boss ? "success" : "error");
-        log(`   - TLTM: ${CONFIG.nonces.tltm || "❌"}`, CONFIG.nonces.tltm ? "success" : "warning");
         log(`   - WP: ${CONFIG.nonces.wp || "❌"}`, CONFIG.nonces.wp ? "success" : "warning");
         log(`   - Token: ${CONFIG.nonces.securityToken ? "✓ OK" : "❌"}`, CONFIG.nonces.securityToken ? "success" : "error");
 
-        if (!CONFIG.nonces.chest) log("⚠️ Không có Chest nonce - Worker Chest sẽ lỗi!", "error");
         if (!CONFIG.nonces.boss) log("⚠️ Không có Boss nonce - Worker Boss sẽ lỗi!", "error");
         if (!CONFIG.nonces.securityToken) log("⚠️ Không có Security Token - Nhiều worker sẽ lỗi!", "error");
     }
@@ -303,7 +284,6 @@ if (window !== window.top) {
                 const resp = await postForm(CONFIG.endpoints.api, {
                     action: "get_next_time_pl",
                     security_token: CONFIG.nonces.securityToken,
-                    security: CONFIG.nonces.chest
                 });
 
                 if (!resp?.success) {
@@ -344,7 +324,6 @@ if (window !== window.top) {
                     const result = await postForm(CONFIG.endpoints.api, {
                         action: "open_chest_pl",
                         security_token: CONFIG.nonces.securityToken,
-                        security: CONFIG.nonces.chest,
                         chest_id: nextChestId
                     });
 
@@ -442,10 +421,6 @@ if (window !== window.top) {
 
     async function runBossTongMonWorker() {
         log("⚔️ [Boss TM] Started", "info");
-        if (!CONFIG.nonces.tltm) {
-            log("⚔️ Không có TLTM security (có thể chưa mở Tông Môn) → Worker bị vô hiệu hóa", "warning");
-            return;
-        }
         while (isRunning) {
             try {
                 const info = await postJson(`${CONFIG.endpoints.tongMon}/check-attack-cooldown`);
@@ -489,7 +464,13 @@ if (window !== window.top) {
         log("🎡 [Spin] Started", "info");
         while (isRunning) {
             try {
-                const result = await postJson(CONFIG.endpoints.spin);
+                const result = await request(CONFIG.endpoints.spin, {
+                    method: "POST",
+                    headers: {
+                        "X-WP-Nonce": CONFIG.nonces.wp,
+                        "X-Security-Token": CONFIG.nonces.securityToken
+                    }
+                });
                 if (result?.success) {
                     log(`🎡 Quay: ${result.message || 'OK'}`, "success");
                     await sleep(CONFIG.delays.check);
@@ -515,13 +496,11 @@ if (window !== window.top) {
 
     async function runTltmWorker() {
         log("💎 [TLTM] Started", "info");
-        if (!CONFIG.nonces.tltm) { log("💎 Chưa có nonce", "warning"); return; }
         while (isRunning) {
             try {
                 const check = await postForm(CONFIG.endpoints.api, {
                     action: "get_remaining_time_tltm",
-                    security_token: CONFIG.nonces.securityToken,
-                    security: CONFIG.nonces.tltm
+                    security_token: CONFIG.nonces.securityToken
                 });
 
                 if (check?.success) {
@@ -538,8 +517,7 @@ if (window !== window.top) {
                     if (waitMs === 0) {
                         const result = await postForm(CONFIG.endpoints.api, {
                             action: "open_chest_tltm",
-                            security_token: CONFIG.nonces.securityToken,
-                            security: CONFIG.nonces.tltm
+                            security_token: CONFIG.nonces.securityToken
                         });
 
                         // Check message hoàn thành sau khi mở rương
@@ -814,10 +792,6 @@ if (window !== window.top) {
 
     async function runVanDapWorker() {
         log("❓ [Vấn Đáp] Started", "info");
-        if (!CONFIG.nonces.tltm) {
-            log("❓ Không có security TLTM → Không chạy vấn đáp", "warning");
-            return;
-        }
 
         try {
             // Load answers từ file JSON
@@ -925,14 +899,110 @@ if (window !== window.top) {
         }
     }
 
+    // ============= DAILY ACTIVITY REWARD WORKER =============
+    async function runDailyRewardWorker() {
+        log("🎁 [Daily Reward] Started", "info");
+
+        const stages = ["stage1", "stage2"];
+        const claimedStages = new Set();
+        let luanVoRewardClaimed = false;
+
+        while (isRunning) {
+            try {
+                // === PHẦN 1: Thưởng hoạt động ngày ===
+                for (const stage of stages) {
+                    if (!isRunning) break;
+                    if (claimedStages.has(stage)) continue;
+
+                    log(`🎁 Đang thử nhận thưởng ${stage}...`, "info");
+
+                    const result = await postForm(CONFIG.endpoints.claimboss, {
+                        action: "daily_activity_reward",
+                        stage: stage
+                    });
+
+                    if (result?.success) {
+                        const msg = result?.data?.message || "Thành công";
+                        log(`🎁 ✅ ${stage}: ${msg}`, "success");
+                        claimedStages.add(stage);
+                    } else {
+                        const errMsg = result?.data?.message || result?.message || "";
+
+                        if (errMsg.includes("đã nhận") || errMsg.includes("hoàn thành")) {
+                            log(`🎁 ${stage}: Đã nhận trước đó`, "info");
+                            claimedStages.add(stage);
+                        } else if (errMsg.includes("chưa đủ điều kiện") || errMsg.includes("chưa đạt")) {
+                            log(`🎁 ${stage}: Chưa đủ điều kiện`, "warning");
+                        } else {
+                            log(`🎁 ${stage}: ${errMsg}`, "warning");
+                        }
+                    }
+
+                    await sleep(2000);
+                }
+
+                // === PHẦN 2: Thưởng Luận Võ ===
+                if (!luanVoRewardClaimed) {
+                    log("🎁 Đang thử nhận thưởng Luận Võ...", "info");
+
+                    const rewardResult = await postJson(`${CONFIG.endpoints.luanVo}/receive-reward`, {});
+
+                    if (rewardResult?.success && rewardResult?.data) {
+                        log(`🎁 ✅ Luận Võ: ${rewardResult.data.message || "Thành công"}`, "success");
+                        luanVoRewardClaimed = true;
+                    } else {
+                        const errMsg = rewardResult?.data?.message || rewardResult?.message || rewardResult?.data || "";
+
+                        if (errMsg.includes("đã nhận") || errMsg.includes("hoàn thành") || errMsg.includes("không có")) {
+                            log(`🎁 Luận Võ: Đã nhận hoặc chưa có thưởng`, "info");
+                            luanVoRewardClaimed = true;
+                        } else if (errMsg.includes("chưa tham gia") || errMsg.includes("chưa đủ")) {
+                            log(`🎁 Luận Võ: ${errMsg}`, "warning");
+                        } else {
+                            log(`🎁 Luận Võ: ${errMsg}`, "warning");
+                        }
+                    }
+
+                    await sleep(2000);
+                }
+
+                // === CHECK HOÀN THÀNH ===
+                const allDone = claimedStages.size >= stages.length && luanVoRewardClaimed;
+
+                if (allDone) {
+                    log("🎁 ✅ Đã nhận hết thưởng - Chờ đến 0h", "success");
+                    await sleep(getMsUntilMidnight() + 5000);
+                    // Reset cho ngày mới
+                    claimedStages.clear();
+                    luanVoRewardClaimed = false;
+                    continue;
+                }
+
+                // Chưa nhận hết, đợi 1 tiếng rồi thử lại
+                log("🎁 Chưa nhận hết thưởng - Đợi 1 tiếng rồi thử lại...", "info");
+                await sleep(60 * 60 * 1000); // 1 tiếng
+
+            } catch (e) {
+                log(`🎁 Error: ${e.message}`, "error");
+                await sleep(CONFIG.delays.error);
+            }
+        }
+    }
+
     // ============= MINING WORKER =============
     async function runMiningWorker() {
         log("⛏️ [Mining] Started", "info");
 
-        const noncesOk = await fetchMiningNonces();
-        if (!noncesOk || !CONFIG.nonces.securityTokenMiner || !CONFIG.nonces.mining) {
-            log("⛏️ ❌ Không có mining nonces", "error");
-            return;
+        // Chỉ fetch nonces nếu chưa có
+        if (!CONFIG.nonces.securityTokenMiner || !CONFIG.nonces.mining) {
+            log("⛏️ Đang tải Mining Nonces...", "info");
+            const noncesOk = await fetchMiningNonces();
+            if (!noncesOk || !CONFIG.nonces.securityTokenMiner || !CONFIG.nonces.mining) {
+                log("⛏️ ❌ Không có mining nonces", "error");
+                return;
+            }
+        } else {
+            log("⛏️ ✓ Đã có mining nonces từ trước", "success");
         }
 
         let mineId = CONFIG.miningConfig.mineId;
@@ -971,6 +1041,15 @@ if (window !== window.top) {
                     security: CONFIG.nonces.getUsersMine || CONFIG.nonces.mining
                 });
 
+                // Check phiên hết hạn
+                const sessionExpiredMsg = usersResult?.data?.message || usersResult?.message || "";
+                if (sessionExpiredMsg.includes("Phiên đã hết hạn") || sessionExpiredMsg.includes("hết hạn") || sessionExpiredMsg.includes("IP") && sessionExpiredMsg.includes("thay đổi")) {
+                    log(`⛏️ ⚠️ Phiên hết hạn - Đang tải lại token...`, "warning");
+                    await fetchMiningNonces();
+                    await sleep(2000);
+                    continue;
+                }
+
                 if (!usersResult?.success || !usersResult?.data?.users) {
                     log(`⛏️ ⚠️ Không thể lấy danh sách người chơi`, "warning");
                     await sleep(CONFIG.delays.error);
@@ -992,6 +1071,13 @@ if (window !== window.top) {
 
                     if (!claimResult?.success) {
                         const msg = claimResult?.message || claimResult?.data?.message || "";
+                        // Check phiên hết hạn
+                        if (msg.includes("Phiên đã hết hạn") || msg.includes("hết hạn") || (msg.includes("IP") && msg.includes("thay đổi"))) {
+                            log(`⛏️ ⚠️ Phiên hết hạn - Đang tải lại token...`, "warning");
+                            await fetchMiningNonces();
+                            await sleep(2000);
+                            continue;
+                        }
                         if (msg.includes("đạt đủ thưởng") || msg.includes("không thể vào")) {
                             log(`⛏️ ✅ Đã đạt đủ thưởng ngày - Chờ đến 0h`, "success");
                             await sleep(getMsUntilMidnight() + 5000);
@@ -1017,6 +1103,13 @@ if (window !== window.top) {
 
                     if (!enterResult?.success) {
                         const errMsg = enterResult?.data?.message || enterResult?.message || "";
+                        // Check phiên hết hạn
+                        if (errMsg.includes("Phiên đã hết hạn") || errMsg.includes("hết hạn") || (errMsg.includes("IP") && errMsg.includes("thay đổi"))) {
+                            log(`⛏️ ⚠️ Phiên hết hạn - Đang tải lại token...`, "warning");
+                            await fetchMiningNonces();
+                            await sleep(2000);
+                            continue;
+                        }
                         if (errMsg.includes("đạt đủ thưởng") || errMsg.includes("không thể vào")) {
                             log(`⛏️ ✅ Đã đạt đủ thưởng ngày - Chờ đến 0h`, "success");
                             await sleep(getMsUntilMidnight() + 5000);
@@ -1069,6 +1162,7 @@ if (window !== window.top) {
                         luanVo: runLuanVoWorker,
                         vanDap: runVanDapWorker,
                         teLe: runTeLeWorker,
+                        dailyReward: runDailyRewardWorker,
                         mining: runMiningWorker
                     };
 

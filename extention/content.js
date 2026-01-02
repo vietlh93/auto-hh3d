@@ -860,10 +860,6 @@ if (window !== window.top) {
 
     async function runTeLeWorker() {
         log("🙏 [Tế Lễ] Started", "info");
-        if (!CONFIG.nonces.tltm) {
-            log("🙏 Không có security TLTM (có thể chưa mở Tông Môn) → Worker bị vô hiệu hóa", "warning");
-            return;
-        }
         while (isRunning) {
             try {
                 const check = await postJson(`${CONFIG.endpoints.tongMon}/check-te-le-status`);

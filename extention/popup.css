@@ -447,16 +447,18 @@ body {
 }
 
 .log-container {
-    flex: 1;
-    min-height: 300px;
-    max-height: 400px;
+    height: 300px;
+    max-height: 300px;
     overflow-y: auto;
+    overflow-x: hidden;
     background: var(--bg-primary);
     border-radius: var(--radius-md);
     padding: 10px;
     font-family: 'Consolas', 'Monaco', monospace;
     font-size: 11px;
     line-height: 1.5;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
 }
 
 .log-container::-webkit-scrollbar {

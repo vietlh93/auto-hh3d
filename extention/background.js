@@ -10,6 +10,12 @@ function addLog(message, level = 'info') {
     console.log(`[${level}] ${message}`);
 }
 
+// Helper function to find HH3D tabs (supports any TLD)
+async function findHH3DTabs() {
+    const allTabs = await chrome.tabs.query({});
+    return allTabs.filter(tab => tab.url && tab.url.includes('hoathinh3d.'));
+}
+
 // Check if content script is ready (no injection - rely on manifest only)
 async function checkContentScript(tabId) {
     try {
@@ -40,11 +46,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
             case 'START':
                 try {
-                    const hh3dTabs = await chrome.tabs.query({ url: "*://*.hoathinh3d.gg/*" });
+                    const hh3dTabs = await findHH3DTabs();
 
                     if (hh3dTabs.length === 0) {
-                        addLog("❌ Hãy mở tab hoathinh3d.gg trước!", "error");
-                        sendResponse({ success: false, error: 'Hãy mở tab hoathinh3d.gg trước!' });
+                        addLog("❌ Hãy mở tab hoathinh3d trước!", "error");
+                        sendResponse({ success: false, error: 'Hãy mở tab hoathinh3d trước!' });
                         return;
                     }
 
@@ -53,8 +59,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                     // Check if content script is ready
                     const scriptReady = await checkContentScript(tabId);
                     if (!scriptReady) {
-                        addLog("❌ Hãy refresh tab hoathinh3d.gg rồi thử lại!", "error");
-                        sendResponse({ success: false, error: 'Refresh tab hoathinh3d.gg và thử lại!' });
+                        addLog("❌ Hãy refresh tab hoathinh3d rồi thử lại!", "error");
+                        sendResponse({ success: false, error: 'Refresh tab hoathinh3d và thử lại!' });
                         return;
                     }
 
@@ -77,7 +83,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                             sendResponse({ success: false, error: response?.error || 'Unknown error' });
                         }
                     } catch (e) {
-                        addLog(`❌ Lỗi kết nối: ${e.message}. Hãy refresh tab hoathinh3d.gg!`, "error");
+                        addLog(`❌ Lỗi kết nối: ${e.message}. Hãy refresh tab hoathinh3d!`, "error");
                         sendResponse({ success: false, error: `${e.message}. Refresh tab và thử lại!` });
                     }
                 } catch (e) {
@@ -88,7 +94,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
             case 'STOP':
                 try {
-                    const hh3dTabs = await chrome.tabs.query({ url: "*://*.hoathinh3d.gg/*" });
+                    const hh3dTabs = await findHH3DTabs();
                     if (hh3dTabs.length > 0) {
                         chrome.tabs.sendMessage(hh3dTabs[0].id, { type: 'STOP' }, { frameId: 0 }).catch(() => { });
                     }
@@ -107,9 +113,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
             case 'LOAD_MINES':
                 try {
-                    const hh3dTabs = await chrome.tabs.query({ url: "*://*.hoathinh3d.gg/*" });
+                    const hh3dTabs = await findHH3DTabs();
                     if (hh3dTabs.length === 0) {
-                        sendResponse({ success: false, error: 'Không tìm thấy tab hoathinh3d.gg' });
+                        sendResponse({ success: false, error: 'Không tìm thấy tab hoathinh3d' });
                         break;
                     }
 
@@ -135,7 +141,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // Listen for tab updates to re-inject content script if needed
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-    if (changeInfo.status === 'complete' && tab.url?.includes('hoathinh3d.gg')) {
+    if (changeInfo.status === 'complete' && tab.url?.includes('hoathinh3d.')) {
         console.log("HH3D tab loaded, content script will be auto-injected by manifest");
     }
 });

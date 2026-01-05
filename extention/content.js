@@ -42,11 +42,16 @@ if (window !== window.top) {
             mineId: null,
             mineType: null
         },
-        delays: { error: 8000, success: 4000, check: 3000, minRequestGap: 6000 }
+        delays: { error: 8000, success: 4000, check: 3000, minRequestGap: 6000 },
+        heartbeat: { interval: 20000, maxMissed: 3 } // 20s interval, max 3 missed
     };
 
     let isRunning = false;
     let workers = [];
+    let activeWorkerNames = []; // Store worker names for resume
+    let savedMiningConfig = null; // Store mining config for resume
+    let heartbeatTimer = null;
+    let missedHeartbeats = 0;
     let nextRequestTime = Date.now();
 
     // ============= UTILITIES =============
@@ -89,6 +94,63 @@ if (window !== window.top) {
         console.log(`[${level.toUpperCase()}] ${message}`);
         safeSendMessage({ type: 'LOG', data: { message, level } });
     }
+
+    // ============= HEARTBEAT MECHANISM =============
+    function startHeartbeat() {
+        if (heartbeatTimer) clearInterval(heartbeatTimer);
+        missedHeartbeats = 0;
+
+        heartbeatTimer = setInterval(async () => {
+            if (!isRunning) {
+                stopHeartbeat();
+                return;
+            }
+
+            if (!isExtensionValid()) {
+                missedHeartbeats++;
+                console.log(`💔 Heartbeat missed (${missedHeartbeats}/${CONFIG.heartbeat.maxMissed})`);
+
+                if (missedHeartbeats >= CONFIG.heartbeat.maxMissed) {
+                    console.log('💔 Extension context lost - stopping workers');
+                    isRunning = false;
+                    stopHeartbeat();
+                }
+                return;
+            }
+
+            try {
+                const response = await chrome.runtime.sendMessage({ type: 'HEARTBEAT' });
+                if (response?.alive) {
+                    missedHeartbeats = 0;
+                    // Background is alive, check if it thinks we should be running
+                    if (response.isRunning && !isRunning) {
+                        console.log('🔄 Background says we should be running - resuming...');
+                        // Could auto-resume here if needed
+                    }
+                }
+            } catch (e) {
+                missedHeartbeats++;
+                console.log(`💔 Heartbeat error: ${e.message}`);
+            }
+        }, CONFIG.heartbeat.interval);
+
+        console.log('💓 Heartbeat started');
+    }
+
+    function stopHeartbeat() {
+        if (heartbeatTimer) {
+            clearInterval(heartbeatTimer);
+            heartbeatTimer = null;
+            console.log('💔 Heartbeat stopped');
+        }
+    }
+
+    // Notify background when page is about to unload
+    window.addEventListener('beforeunload', () => {
+        if (isRunning) {
+            safeSendMessage({ type: 'WORKER_STOPPED' });
+        }
+    });
 
     // ============= HTTP CLIENT =============
     async function enforceDelay() {
@@ -1167,11 +1229,21 @@ if (window !== window.top) {
                             workerMap[name]().catch(e => log(`💥 ${name} crashed: ${e.message}`, 'error'));
                         }
                     }
+                    // Store for potential resume
+                    activeWorkerNames = message.workers;
+                    savedMiningConfig = message.miningConfig;
+
+                    // Start heartbeat
+                    startHeartbeat();
+
                     sendResponse({ success: true });
                     break;
 
                 case 'STOP':
                     isRunning = false;
+                    activeWorkerNames = [];
+                    savedMiningConfig = null;
+                    stopHeartbeat();
                     log("⏹️ Đã dừng workers", "warning");
                     sendResponse({ success: true });
                     break;
@@ -1182,6 +1254,15 @@ if (window !== window.top) {
 
                 case 'PING':
                     sendResponse({ pong: true });
+                    break;
+
+                case 'STATE_SYNC':
+                    // Background is telling us the running state (after service worker restart)
+                    if (message.isRunning && !isRunning) {
+                        log("🔄 Nhận thông báo đồng bộ từ background - extension đang chạy", "info");
+                        log("ℹ️ Nếu worker cần resume, vui lòng nhấn Stop rồi Start lại", "warning");
+                    }
+                    sendResponse({ success: true, currentState: isRunning });
                     break;
 
                 case 'LOAD_MINES':

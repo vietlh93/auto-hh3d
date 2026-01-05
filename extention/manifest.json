@@ -5,7 +5,8 @@
     "description": "Tự động hóa các tác vụ trên hoathinh3d",
     "permissions": [
         "storage",
-        "tabs"
+        "tabs",
+        "alarms"
     ],
     "host_permissions": [
         "*://*.hoathinh3d.li/*",

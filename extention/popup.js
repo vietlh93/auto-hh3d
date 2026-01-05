@@ -73,6 +73,7 @@ checkMinesBtn.addEventListener('click', async () => {
       minesData = response.mines;
       populateMineSelect(response.mines);
       mineHint.textContent = `✅ Đã tải ${response.mines.length} mỏ`;
+      saveState(); // Lưu danh sách mỏ
     } else {
       mineHint.textContent = `❌ Lỗi: ${response.error || 'Không thể tải'}`;
       addLog(`❌ Load mines failed: ${response.error}`, 'error');
@@ -162,7 +163,9 @@ function saveState() {
     miningConfig: {
       mineType: mineTypeSelect.value,
       mineId: mineSelect.value
-    }
+    },
+    // Lưu danh sách mỏ đã load
+    minesData: minesData
   };
   workerCheckboxes.forEach(cb => state.workers[cb.value] = cb.checked);
   chrome.storage.local.set({ popupState: state });
@@ -181,10 +184,23 @@ function loadState() {
 
       // Load mining config
       if (result.popupState.miningConfig) {
+        // Set mine type first
         if (result.popupState.miningConfig.mineType) {
           mineTypeSelect.value = result.popupState.miningConfig.mineType;
         }
-        // Note: mineSelect sẽ được populate khi user bấm Check
+
+        // Khôi phục danh sách mỏ đã load trước đó
+        if (result.popupState.minesData && result.popupState.minesData.length > 0) {
+          minesData = result.popupState.minesData;
+          populateMineSelect(minesData);
+
+          // Khôi phục mỏ đã chọn
+          if (result.popupState.miningConfig.mineId) {
+            mineSelect.value = result.popupState.miningConfig.mineId;
+          }
+
+          mineHint.textContent = `📦 Đã khôi phục ${minesData.length} mỏ từ lần trước`;
+        }
       }
     }
   });

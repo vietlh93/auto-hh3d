@@ -72,11 +72,6 @@
                             <span class="worker-name">TLTM</span>
                         </label>
 
-                        <label class="worker-item" title="Luận Võ Đài - Tự động thách đấu">
-                            <input type="checkbox" name="worker" value="luanVo" checked>
-                            <span class="worker-icon">⚔️</span>
-                            <span class="worker-name">Luận Võ</span>
-                        </label>
 
                         <label class="worker-item" title="Vấn Đáp - Tự động trả lời câu hỏi">
                             <input type="checkbox" name="worker" value="vanDap" checked>
@@ -100,6 +95,18 @@
                             <input type="checkbox" name="worker" value="mining">
                             <span class="worker-icon">⛏️</span>
                             <span class="worker-name">Khoáng Mạch</span>
+                        </label>
+
+                        <label class="worker-item" title="Luyện Đan - Tự động luyện đan và Điều Hỏa">
+                            <input type="checkbox" name="worker" value="luyenDan">
+                            <span class="worker-icon">🧪</span>
+                            <span class="worker-name">Luyện Đan</span>
+                        </label>
+
+                        <label class="worker-item" title="Mê Cung - Tự động tham gia chiến đấu và nhận rương">
+                            <input type="checkbox" name="worker" value="meCung">
+                            <span class="worker-icon">⚔️</span>
+                            <span class="worker-name">Mê Cung</span>
                         </label>
                     </div>
                 </div>
@@ -128,6 +135,33 @@
                         </div>
                         <div class="config-row hint" id="mineHint">
                             💡 Bấm Check để xem danh sách mỏ
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Me Cung Config -->
+                <div class="section mecung-section" id="mecungSection" style="border: 1px solid rgba(124, 58, 237, 0.3); background: rgba(124, 58, 237, 0.05);">
+                    <div class="section-header">
+                        <span class="section-icon">⚔️</span>
+                        <span>Cấu hình Mê Cung</span>
+                    </div>
+                    <div class="mecung-config" style="display: flex; flex-direction: column; gap: 10px;">
+                        <div class="config-row">
+                            <label style="font-size: 12px; color: var(--text-secondary); min-width: 90px; flex-shrink: 0;">Số người min:</label>
+                            <select id="mcMinPlayers" style="flex: 1; padding: 8px 12px; background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--text-primary); font-size: 12px; outline: none;">
+                                <option value="1">1 Người (Solo)</option>
+                                <option value="2">2 Người</option>
+                                <option value="3">3 Người</option>
+                                <option value="4">4 Người</option>
+                                <option value="5" selected>5 Người (Tối đa)</option>
+                            </select>
+                        </div>
+                        <div class="config-row">
+                            <label style="font-size: 12px; color: var(--text-secondary); min-width: 90px; flex-shrink: 0;">Vai trò:</label>
+                            <select id="mcRole" style="flex: 1; padding: 8px 12px; background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--text-primary); font-size: 12px; outline: none;">
+                                <option value="host">Chủ Phòng (Chỉ Lập phòng)</option>
+                                <option value="member" selected>Thành Viên (Chỉ Vào phòng)</option>
+                            </select>
                         </div>
                     </div>
                 </div>

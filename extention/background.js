@@ -69,13 +69,20 @@ async function injectContentScript(tabId) {
             // Content script chưa có, tiến hành inject
         }
 
+        // Inject inject.js vào MAIN world trước để tránh lỗi CSP khi tự load từ content script
+        await chrome.scripting.executeScript({
+            target: { tabId: tabId, allFrames: false },
+            files: ['inject.js'],
+            world: 'MAIN'
+        });
+
         await chrome.scripting.executeScript({
             target: { tabId: tabId, allFrames: false },
             files: ['content.js']
         });
 
         injectedTabs.add(tabId);
-        console.log(`✅ Đã inject content.js vào tab ${tabId}`);
+        console.log(`✅ Đã inject inject.js (MAIN) và content.js vào tab ${tabId}`);
         return true;
     } catch (e) {
         console.error(`❌ Inject failed cho tab ${tabId}:`, e.message);
@@ -121,11 +128,12 @@ async function saveState() {
     }
 }
 
-async function saveWorkerConfig(workers, miningConfig) {
+async function saveWorkerConfig(workers, miningConfig, mecungConfig) {
     try {
         await chrome.storage.local.set({
             savedWorkers: workers,
             savedMiningConfig: miningConfig,
+            savedMecungConfig: mecungConfig,
             savedAt: Date.now()
         });
         console.log('💾 Worker config saved by background');
@@ -136,7 +144,7 @@ async function saveWorkerConfig(workers, miningConfig) {
 
 async function clearWorkerConfig() {
     try {
-        await chrome.storage.local.remove(['savedWorkers', 'savedMiningConfig', 'savedAt']);
+        await chrome.storage.local.remove(['savedWorkers', 'savedMiningConfig', 'savedMecungConfig', 'savedAt']);
         console.log('🗑️ Worker config cleared by background');
     } catch (e) {
         console.error('Failed to clear worker config:', e);
@@ -278,13 +286,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                         const response = await chrome.tabs.sendMessage(tabId, {
                             type: 'START',
                             workers: message.workers,
-                            miningConfig: message.miningConfig
+                            miningConfig: message.miningConfig,
+                            mecungConfig: message.mecungConfig
                         }, { frameId: 0 });
 
                         if (response?.success) {
                             isRunning = true;
                             await saveState();
-                            await saveWorkerConfig(message.workers, message.miningConfig);
+                            await saveWorkerConfig(message.workers, message.miningConfig, message.mecungConfig);
                             chrome.runtime.sendMessage({ type: 'STATUS_UPDATE', data: { isRunning: true } }).catch(() => { });
                             sendResponse({ success: true });
                         } else {

@@ -15,6 +15,12 @@ const mineSelect = document.getElementById('mineSelect');
 const checkMinesBtn = document.getElementById('checkMinesBtn');
 const mineHint = document.getElementById('mineHint');
 
+// Mê Cung config elements
+const mcMinPlayersSelect = document.getElementById('mcMinPlayers');
+const mcRoleSelect = document.getElementById('mcRole');
+const miningSection = document.getElementById('miningSection');
+const mecungSection = document.getElementById('mecungSection');
+
 let isRunning = false;
 let minesData = []; // Store loaded mines
 
@@ -41,13 +47,22 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 
+function updateConfigSectionsVisibility() {
+  const miningCb = Array.from(workerCheckboxes).find(cb => cb.value === 'mining');
+  const meCungCb = Array.from(workerCheckboxes).find(cb => cb.value === 'meCung');
+  if (miningSection) miningSection.style.display = (miningCb && miningCb.checked) ? 'block' : 'none';
+  if (mecungSection) mecungSection.style.display = (meCungCb && meCungCb.checked) ? 'block' : 'none';
+}
+
 toggleAll.addEventListener('change', () => {
   workerCheckboxes.forEach(cb => cb.checked = toggleAll.checked);
+  updateConfigSectionsVisibility();
   saveState();
 });
 
 workerCheckboxes.forEach(cb => cb.addEventListener('change', () => {
   toggleAll.checked = Array.from(workerCheckboxes).every(c => c.checked);
+  updateConfigSectionsVisibility();
   saveState();
 }));
 
@@ -61,6 +76,10 @@ mineTypeSelect.addEventListener('change', () => {
 });
 
 mineSelect.addEventListener('change', saveState);
+
+// Mê Cung config change handlers
+mcMinPlayersSelect.addEventListener('change', saveState);
+mcRoleSelect.addEventListener('change', saveState);
 
 // Check Mines Button
 checkMinesBtn.addEventListener('click', async () => {
@@ -116,11 +135,18 @@ startBtn.addEventListener('click', async () => {
     mineId: mineSelect.value ? parseInt(mineSelect.value) : null
   };
 
+  // Lấy Mê Cung config
+  const mecungConfig = {
+    minPlayers: mcMinPlayersSelect.value ? parseInt(mcMinPlayersSelect.value) : 5,
+    role: mcRoleSelect.value || 'member'
+  };
+
   startBtn.disabled = true;
   const response = await chrome.runtime.sendMessage({
     type: 'START',
     workers: selectedWorkers,
-    miningConfig: miningConfig
+    miningConfig: miningConfig,
+    mecungConfig: mecungConfig
   });
   if (response.success) { updateStatus(true); }
   else addLog(`❌ Lỗi: ${response.error}`, 'error');
@@ -169,6 +195,10 @@ function saveState() {
       mineType: mineTypeSelect.value,
       mineId: mineSelect.value
     },
+    mecungConfig: {
+      minPlayers: mcMinPlayersSelect.value,
+      role: mcRoleSelect.value
+    },
     // Lưu danh sách mỏ đã load
     minesData: minesData
   };
@@ -207,6 +237,20 @@ function loadState() {
           mineHint.textContent = `📦 Đã khôi phục ${minesData.length} mỏ từ lần trước`;
         }
       }
+
+      // Load Mê Cung config
+      if (result.popupState.mecungConfig) {
+        if (result.popupState.mecungConfig.minPlayers) {
+          mcMinPlayersSelect.value = result.popupState.mecungConfig.minPlayers;
+        }
+        if (result.popupState.mecungConfig.role) {
+          mcRoleSelect.value = result.popupState.mecungConfig.role;
+        }
+      }
+
+      updateConfigSectionsVisibility();
+    } else {
+      updateConfigSectionsVisibility();
     }
   });
 }

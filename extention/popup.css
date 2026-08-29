@@ -37,9 +37,12 @@
 
 body {
     font-family: 'Segoe UI', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-    background: var(--bg-primary);
+    background: radial-gradient(circle at top left, rgba(124, 58, 237, 0.28), transparent 34%),
+        radial-gradient(circle at bottom right, rgba(16, 185, 129, 0.12), transparent 30%),
+        var(--bg-primary);
     color: var(--text-primary);
-    width: 780px;
+    width: min(780px, 100vw);
+    min-width: 360px;
     min-height: 520px;
     overflow-x: hidden;
     overflow-y: auto;
@@ -593,4 +596,117 @@ body {
 
 .right-column .section:nth-child(2) {
     animation-delay: 0.15s;
+}
+
+/* ============= Side Panel Responsive Layout ============= */
+@media (max-width: 620px) {
+    body {
+        width: 100vw;
+        min-width: 0;
+        min-height: 100vh;
+    }
+
+    .container {
+        padding: 12px;
+    }
+
+    .header {
+        flex-wrap: wrap;
+        justify-content: flex-start;
+        gap: 10px;
+    }
+
+    .logo {
+        flex: 1 1 100%;
+    }
+
+    .main-content {
+        flex-direction: column;
+    }
+
+    .left-column,
+    .right-column {
+        width: 100%;
+        min-width: 0;
+    }
+
+    .workers-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .controls-section {
+        position: sticky;
+        top: 8px;
+        z-index: 5;
+        background: rgba(26, 26, 46, 0.9);
+        box-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
+    }
+
+    .log-container {
+        height: 260px;
+        max-height: 42vh;
+    }
+}
+
+/* ============= Active Tab Guard ============= */
+.tab-guard-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: grid;
+    place-items: center;
+    padding: 18px;
+    opacity: 0;
+    pointer-events: none;
+    background: radial-gradient(circle at top left, rgba(124, 58, 237, 0.32), transparent 38%),
+        radial-gradient(circle at bottom right, rgba(16, 185, 129, 0.14), transparent 32%),
+        rgba(15, 15, 26, 0.96);
+    backdrop-filter: blur(14px);
+    transition: var(--transition);
+}
+
+.tab-guard-overlay.visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.tab-guard-card {
+    width: min(100%, 360px);
+    padding: 24px 20px;
+    text-align: center;
+    border: 1px solid var(--border-color);
+    border-radius: 20px;
+    background: rgba(30, 30, 50, 0.88);
+    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.4), var(--shadow-glow);
+}
+
+.tab-guard-icon {
+    display: inline-grid;
+    place-items: center;
+    width: 58px;
+    height: 58px;
+    margin-bottom: 14px;
+    border-radius: 18px;
+    background: var(--accent-gradient);
+    font-size: 30px;
+    box-shadow: var(--shadow-glow);
+}
+
+.tab-guard-card h2 {
+    margin-bottom: 8px;
+    font-size: 18px;
+}
+
+.tab-guard-card p {
+    color: var(--text-secondary);
+    font-size: 13px;
+    line-height: 1.55;
+}
+
+.tab-guard-card small {
+    display: block;
+    margin-top: 12px;
+    color: var(--text-muted);
+    font-size: 10px;
+    word-break: break-all;
 }

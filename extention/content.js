@@ -8,6 +8,7 @@ if (window !== window.top) {
     console.log('🐉 HH3D Auto Tool - Already initialized, skipping...');
 } else {
     window.__HH3D_INITIALIZED__ = true;
+    window.__pageLoadDate = new Date().toDateString();
     console.log('🐉 HH3D Auto Tool - Content Script loaded');
 
     const CONFIG = {
@@ -58,6 +59,12 @@ if (window !== window.top) {
             minPlayers: 5,
             role: "member"
         },
+        luyenDanConfig: {
+            targetTier: "auto",
+            autoDecompose: false,
+            decomposeTier: "ha",
+            decomposeStars: "1-2"
+        },
         delays: { error: 8000, success: 4000, check: 3000, minRequestGap: 6000 },
         heartbeat: { interval: 20000, maxMissed: 3 } // 20s interval, max 3 missed
     };
@@ -69,6 +76,7 @@ if (window !== window.top) {
     let activeWorkerNames = []; // Store worker names for resume
     let savedMiningConfig = null; // Store mining config for resume
     let savedMecungConfig = null; // Store Mê Cung config for resume
+    let savedLuyenDanConfig = null; // Store Luyện Đan config for resume
     let heartbeatTimer = null;
     let missedHeartbeats = 0;
     let nextRequestTime = Date.now();
@@ -97,42 +105,100 @@ if (window !== window.top) {
         return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
     };
 
+    const isNearMidnight = () => {
+        const now = new Date();
+        return now.getHours() === 0 && now.getMinutes() < 15;
+    };
+
     async function markWorkerDone(workerName) {
+        if (!isExtensionValid()) {
+            isRunning = false;
+            return;
+        }
         try {
             const result = await chrome.storage.local.get(['dailyCompletion']);
             const completion = result.dailyCompletion || {};
             const today = getTodayKey();
-            if (!completion[today]) completion[today] = {};
-            completion[today][workerName] = Date.now();
-            // Xóa dữ liệu cũ hơn 2 ngày
+            completion[workerName] = {
+                date: today,
+                timestamp: Date.now()
+            };
+            // Xóa dữ liệu cũ của ngày khác
             for (const key of Object.keys(completion)) {
-                if (key !== today) delete completion[key];
+                if (completion[key] && completion[key].date !== today) {
+                    delete completion[key];
+                }
             }
             await chrome.storage.local.set({ dailyCompletion: completion });
             console.log(`✅ Đã đánh dấu ${workerName} hoàn thành ngày ${today}`);
         } catch (e) {
+            if (e.message && e.message.includes('invalidated')) {
+                isRunning = false;
+                return;
+            }
             console.error('markWorkerDone error:', e);
         }
     }
 
+    async function clearWorkerDone(workerName) {
+        if (!isExtensionValid()) {
+            isRunning = false;
+            return;
+        }
+        try {
+            const result = await chrome.storage.local.get(['dailyCompletion']);
+            const completion = result.dailyCompletion || {};
+            if (completion[workerName]) {
+                delete completion[workerName];
+                await chrome.storage.local.set({ dailyCompletion: completion });
+                console.log(`🗑️ Đã xóa đánh dấu hoàn thành của ${workerName}`);
+            }
+        } catch (e) {
+            if (e.message && e.message.includes('invalidated')) {
+                isRunning = false;
+            }
+        }
+    }
+
     async function isWorkerDone(workerName) {
+        if (!isExtensionValid()) {
+            isRunning = false;
+            return false;
+        }
         try {
             const result = await chrome.storage.local.get(['dailyCompletion']);
             const completion = result.dailyCompletion || {};
             const today = getTodayKey();
-            return !!(completion[today] && completion[today][workerName]);
+            const data = completion[workerName];
+            return !!(data && data.date === today);
         } catch (e) {
+            if (e.message && e.message.includes('invalidated')) {
+                isRunning = false;
+            }
             return false;
         }
     }
 
     async function getDoneWorkers() {
+        if (!isExtensionValid()) {
+            isRunning = false;
+            return [];
+        }
         try {
             const result = await chrome.storage.local.get(['dailyCompletion']);
             const completion = result.dailyCompletion || {};
             const today = getTodayKey();
-            return completion[today] ? Object.keys(completion[today]) : [];
+            const done = [];
+            for (const [name, val] of Object.entries(completion)) {
+                if (val && val.date === today) {
+                    done.push(name);
+                }
+            }
+            return done;
         } catch (e) {
+            if (e.message && e.message.includes('invalidated')) {
+                isRunning = false;
+            }
             return [];
         }
     }
@@ -216,9 +282,10 @@ if (window !== window.top) {
     // Kiểm tra extension context còn hợp lệ
     function isExtensionValid() {
         try {
-            if (typeof chrome === 'undefined' || !chrome.runtime) return false;
-            const id = chrome.runtime.id;
-            return !!id;
+            if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.id) return false;
+            // Gọi getManifest() để kích hoạt lỗi nếu context đã bị vô hiệu hóa (invalidated)
+            chrome.runtime.getManifest();
+            return true;
         } catch (e) {
             return false;
         }
@@ -241,47 +308,65 @@ if (window !== window.top) {
 
     // ============= WORKER CONFIG PERSISTENCE =============
     // Save worker config to storage for resume capability
-    async function saveWorkerConfig(workerNames, miningConfig, mecungConfig) {
+    async function saveWorkerConfig(workerNames, miningConfig, mecungConfig, luyenDanConfig) {
+        if (!isExtensionValid()) {
+            isRunning = false;
+            return;
+        }
         try {
             await chrome.storage.local.set({
                 savedWorkers: workerNames,
                 savedMiningConfig: miningConfig,
                 savedMecungConfig: mecungConfig,
+                savedLuyenDanConfig: luyenDanConfig,
                 savedAt: Date.now()
             });
             console.log('💾 Worker config saved to storage');
         } catch (e) {
+            if (e.message && e.message.includes('invalidated')) {
+                isRunning = false;
+                return;
+            }
             console.error('Failed to save worker config:', e);
         }
     }
 
     // Clear worker config from storage
     async function clearWorkerConfig() {
+        if (!isExtensionValid()) {
+            isRunning = false;
+            return;
+        }
         try {
-            await chrome.storage.local.remove(['savedWorkers', 'savedMiningConfig', 'savedMecungConfig', 'savedAt']);
+            await chrome.storage.local.remove(['savedWorkers', 'savedMiningConfig', 'savedMecungConfig', 'savedLuyenDanConfig', 'savedAt']);
             console.log('🗑️ Worker config cleared from storage');
         } catch (e) {
+            if (e.message && e.message.includes('invalidated')) {
+                isRunning = false;
+                return;
+            }
             console.error('Failed to clear worker config:', e);
         }
     }
 
     // Load worker config from storage
     async function loadWorkerConfig() {
+        if (!isExtensionValid()) {
+            isRunning = false;
+            return null;
+        }
         try {
-            const result = await chrome.storage.local.get(['savedWorkers', 'savedMiningConfig', 'savedMecungConfig', 'savedAt', 'popupState']);
+            const result = await chrome.storage.local.get(['savedWorkers', 'savedMiningConfig', 'savedMecungConfig', 'savedLuyenDanConfig', 'savedAt', 'popupState']);
 
             // First try: Load from savedWorkers (set by START command)
             if (result.savedWorkers && result.savedWorkers.length > 0) {
-                // Check if config is not too old (24 hours max)
-                const maxAge = 24 * 60 * 60 * 1000;
-                if (result.savedAt && (Date.now() - result.savedAt) < maxAge) {
-                    console.log('📦 Loading config from savedWorkers');
-                    return {
-                        workers: result.savedWorkers,
-                        miningConfig: result.savedMiningConfig,
-                        mecungConfig: result.savedMecungConfig
-                    };
-                }
+                console.log('📦 Loading config from savedWorkers');
+                return {
+                    workers: result.savedWorkers,
+                    miningConfig: result.savedMiningConfig,
+                    mecungConfig: result.savedMecungConfig,
+                    luyenDanConfig: result.savedLuyenDanConfig
+                };
             }
 
             // Fallback: Load from popupState (checkbox selections in popup)
@@ -311,25 +396,49 @@ if (window !== window.top) {
                         };
                     }
 
+                    // Build luyenDan config from popupState
+                    let luyenDanConfig = null;
+                    if (result.popupState.luyenDanConfig) {
+                        luyenDanConfig = {
+                            targetTier: result.popupState.luyenDanConfig.targetTier || 'auto',
+                            autoDecompose: !!result.popupState.luyenDanConfig.autoDecompose,
+                            decomposeTier: result.popupState.luyenDanConfig.decomposeTier || 'ha'
+                        };
+                    }
+
                     return {
                         workers: selectedWorkers,
                         miningConfig: miningConfig,
-                        mecungConfig: mecungConfig
+                        mecungConfig: mecungConfig,
+                        luyenDanConfig: luyenDanConfig
                     };
                 }
             }
 
             return null;
         } catch (e) {
+            if (e.message && e.message.includes('invalidated')) {
+                isRunning = false;
+                return null;
+            }
             console.error('Failed to load worker config:', e);
             return null;
         }
     }
 
     // Resume workers from saved config
-    async function resumeWorkers() {
-        if (isRunning || isResuming) {
+    async function resumeWorkers(force = false) {
+        if ((isRunning || isResuming) && !force) {
             console.log('⚠️ Already running or resuming, skip resume');
+            return false;
+        }
+
+        const todayString = new Date().toDateString();
+        if (window.__pageLoadDate && window.__pageLoadDate !== todayString) {
+            log("📅 Trang game được tải từ ngày cũ. Đang tự động tải lại trang để tránh dữ liệu lỗi...", "warning");
+            setTimeout(() => {
+                window.location.reload();
+            }, 1000);
             return false;
         }
 
@@ -360,10 +469,19 @@ if (window !== window.top) {
                 CONFIG.mecungConfig.role = config.mecungConfig.role || 'member';
             }
 
+            // Apply Luyện Đan config if exists
+            if (config.luyenDanConfig) {
+                CONFIG.luyenDanConfig.targetTier = config.luyenDanConfig.targetTier || 'auto';
+                CONFIG.luyenDanConfig.autoDecompose = !!config.luyenDanConfig.autoDecompose;
+                CONFIG.luyenDanConfig.decomposeTier = config.luyenDanConfig.decomposeTier || 'ha';
+                CONFIG.luyenDanConfig.decomposeStars = config.luyenDanConfig.decomposeStars || '1-2';
+            }
+
             // Fetch fresh nonces
             const activeWorkers = [];
             for (const name of config.workers) {
-                if (await isWorkerDone(name)) {
+                // Vòng quay (spin) có thể nhận thêm lượt trong ngày (từ Mốc 2), nên không bỏ qua khi startup
+                if (name !== 'spin' && await isWorkerDone(name)) {
                     const vnNames = { chest: 'Rương', boss: 'Boss HV', bossTongMon: 'Boss TM', spin: 'Quay', tltm: 'TLTM', vanDap: 'Vấn Đáp', teLe: 'Tế Lễ', dailyReward: 'Daily', mining: 'Đào Mỏ', luyenDan: 'Luyện Đan', meCung: 'Mê Cung' };
                     log(`ℹ️ ${vnNames[name] || name} đã xong hôm nay. Bỏ qua.`, 'success');
                     continue;
@@ -490,6 +608,7 @@ if (window !== window.top) {
                 const rc2 = document.getElementById("rc2");
                 if (rc2 && rc2.classList.contains("claimed")) {
                     forceSpinCheck = true;
+                    clearWorkerDone('spin');
                     log("🎡 Đã nhận thành công Mốc 2 thủ công. Kích hoạt lượt quay mới!", "success");
                 }
             }, 3000);
@@ -559,6 +678,33 @@ if (window !== window.top) {
             // Handle other errors
             if (!res.ok && res.status !== 200) {
                 console.log(`⚠️ HTTP ${res.status} for ${url}`);
+                let errorData;
+                let msg = `HTTP error ${res.status}`;
+                try {
+                    const contentType = res.headers.get("content-type") || "";
+                    if (contentType.includes("application/json")) {
+                        errorData = await res.json();
+                        msg = errorData?.message || errorData?.data?.message || msg;
+                    } else {
+                        const text = await res.text();
+                        if (text.includes("Phiên đã hết hạn") || text.includes("phiên đăng nhập đã hết hạn")) {
+                            log("🛑 ⚠️ Phát hiện phiên đăng nhập hết hạn! Đang tự động tải lại trang...", "error");
+                            await sleep(3000);
+                            window.location.reload();
+                        }
+                        msg = text.substring(0, 200) || msg;
+                    }
+                } catch (e) {
+                    console.error("Error reading error response", e);
+                }
+
+                if (typeof msg === "string" && (msg.includes("Phiên đã hết hạn") || msg.includes("Phiên hết hạn") || msg.includes("phiên đăng nhập hết hạn") || (msg.includes("IP") && msg.includes("thay đổi")))) {
+                    log("🛑 ⚠️ Phát hiện phiên đăng nhập hết hạn! Đang tự động tải lại trang...", "error");
+                    await sleep(3000);
+                    window.location.reload();
+                }
+
+                return { success: false, message: msg };
             }
 
             let data;
@@ -663,6 +809,7 @@ if (window !== window.top) {
                 /["']lotterySpin["']\s*:\s*["']([^"']+)["']/i,
                 /lotterySpin\s*:\s*["']([^"']+)["']/i,
                 /hh3dData\.act\.lotterySpin\s*=\s*["']([^"']+)["']/i,
+                /["'](?:luckySpin|quaySo|vongQuay|quay|lottery|spin)["']\s*:\s*["']([^"']+)["']/i,
             ],
             chest: [
                 /open_chest_pl[^}]*security["\s:]+["']([a-f0-9]{10})["']/i,
@@ -731,7 +878,9 @@ if (window !== window.top) {
             // Decrypt homepage actions
             const homeDecrypted = decryptHh3dActions(home);
             if (homeDecrypted) {
-                if (homeDecrypted.lotterySpin) CONFIG.nonces.lotterySpin = homeDecrypted.lotterySpin;
+                console.log("🐉 [Home Decrypted Actions]:", Object.keys(homeDecrypted));
+                const spinAction = homeDecrypted.lotterySpin || homeDecrypted.spin || homeDecrypted.luckySpin || homeDecrypted.quay || homeDecrypted.quaySo || homeDecrypted.lottery || homeDecrypted.vongQuay;
+                if (spinAction) CONFIG.nonces.lotterySpin = spinAction;
                 if (homeDecrypted.bossAttack) CONFIG.nonces.bossAttackAction = homeDecrypted.bossAttack;
                 if (homeDecrypted.bossGet) CONFIG.nonces.bossGetAction = homeDecrypted.bossGet;
                 if (homeDecrypted.bossTimer) CONFIG.nonces.bossTimerAction = homeDecrypted.bossTimer;
@@ -748,13 +897,26 @@ if (window !== window.top) {
             const spinPage = await fetchPage("/vong-quay-phuc-van/");
             if (spinPage) {
                 const spinDecrypted = decryptHh3dActions(spinPage);
-                if (spinDecrypted && spinDecrypted.lotterySpin) {
-                    CONFIG.nonces.lotterySpin = spinDecrypted.lotterySpin;
+                const spinAction = spinDecrypted ? (spinDecrypted.lotterySpin || spinDecrypted.spin || spinDecrypted.luckySpin || spinDecrypted.quay || spinDecrypted.quaySo || spinDecrypted.lottery || spinDecrypted.vongQuay) : null;
+                if (spinDecrypted) {
+                    console.log("🐉 [Spin Decrypted Actions]:", Object.keys(spinDecrypted));
+                }
+                if (spinAction) {
+                    CONFIG.nonces.lotterySpin = spinAction;
+                    await chrome.storage.local.set({ lastKnownSpinRoute: spinAction });
                 } else {
                     CONFIG.nonces.lotterySpin = extractSecurity(spinPage, patterns.lotterySpin) || CONFIG.nonces.lotterySpin || "spin";
                 }
             } else if (!CONFIG.nonces.lotterySpin) {
                 CONFIG.nonces.lotterySpin = "spin";
+            }
+
+            if (CONFIG.nonces.lotterySpin === "spin") {
+                const saved = await chrome.storage.local.get(['lastKnownSpinRoute']);
+                if (saved.lastKnownSpinRoute) {
+                    CONFIG.nonces.lotterySpin = saved.lastKnownSpinRoute;
+                    console.log("🎡 [Startup] Using last known spin route from storage:", CONFIG.nonces.lotterySpin);
+                }
             }
         }
 
@@ -961,6 +1123,11 @@ if (window !== window.top) {
             } else {
                 log(`⚠️ Điểm danh: ${msg || 'Đã điểm danh hoặc lỗi'}`, "warning");
                 if (msg.includes('đã điểm danh') || msg.includes('Đã điểm danh') || msg.includes('hôm nay')) {
+                    if (isNearMidnight()) {
+                        log("📅 ⚠️ Đang gần nửa đêm. Không đánh dấu điểm danh xong để tránh lỗi ngày mới. Sẽ thử lại sau 5 phút...", "warning");
+                        setTimeout(dailyCheckIn, 300000);
+                        return;
+                    }
                     await markWorkerDone('dailyCheckIn');
                 }
             }
@@ -988,6 +1155,11 @@ if (window !== window.top) {
                 if (!resp?.success) {
                     const errMsg = resp?.message || resp?.data?.message || JSON.stringify(resp) || "Không có response";
                     if (errMsg.includes("hoàn thành")) {
+                        if (isNearMidnight()) {
+                            log("🎁 ⚠️ Đang gần nửa đêm. Không đánh dấu hoàn thành để tránh lỗi ngày mới. Thử lại sau 5 phút...", "warning");
+                            await sleep(300000);
+                            continue;
+                        }
                         log("🎁 ✅ Đã hoàn thành hôm nay", "success");
                         await markWorkerDone('chest');
                         await sleep(getMsUntilMidnight() + 5000);
@@ -1011,6 +1183,11 @@ if (window !== window.top) {
                 }
 
                 if (currentLevel >= 4) {
+                    if (isNearMidnight()) {
+                        log("🎁 ⚠️ Đang gần nửa đêm. Không đánh dấu hoàn thành để tránh lỗi ngày mới. Thử lại sau 5 phút...", "warning");
+                        await sleep(300000);
+                        continue;
+                    }
                     log("🎁 Đã nhận đủ 4 rương", "success");
                     await markWorkerDone('chest');
                     await sleep(getMsUntilMidnight() + 5000);
@@ -1116,6 +1293,11 @@ if (window !== window.top) {
                 if (!boss?.success || !boss.data?.id) {
                     const errMsg = boss?.message || boss?.data?.message || boss?.data?.error || JSON.stringify(boss) || "Không có response";
                     if (errMsg.includes("hết lượt") || errMsg.includes("hoàn thành")) {
+                        if (isNearMidnight()) {
+                            log("🛡️ ⚠️ Đang gần nửa đêm. Không đánh dấu hoàn thành để tránh lỗi ngày mới. Thử lại sau 5 phút...", "warning");
+                            await sleep(300000);
+                            continue;
+                        }
                         log("🛡️ ✅ Đã hoàn thành Boss Hoang Vực hôm nay", "success");
                         await markWorkerDone('boss');
                         await sleep(getMsUntilMidnight() + 5000);
@@ -1182,6 +1364,11 @@ if (window !== window.top) {
                         await sleep(2000);
                         continue;
                     } else if (msg.includes("hết lượt") || msg.includes("hết lượt tấn công")) {
+                        if (isNearMidnight()) {
+                            log("🛡️ ⚠️ Đang gần nửa đêm. Không đánh dấu hoàn thành để tránh lỗi ngày mới. Thử lại sau 5 phút...", "warning");
+                            await sleep(300000);
+                            continue;
+                        }
                         log("🛡️ ✅ Đã hoàn thành hôm nay", "success");
                         await markWorkerDone('boss');
                         await sleep(getMsUntilMidnight() + 5000);
@@ -1225,6 +1412,11 @@ if (window !== window.top) {
                 }
 
                 if (info.cooldown_type === "daily_limit" || info.remaining_attacks === 0) {
+                    if (isNearMidnight()) {
+                        log("⚔️ ⚠️ Đang gần nửa đêm. Không đánh dấu hoàn thành để tránh lỗi ngày mới. Thử lại sau 5 phút...", "warning");
+                        await sleep(300000);
+                        continue;
+                    }
                     log("⚔️ ✅ Hết lượt trong ngày – chờ đến 0h", "success");
                     await markWorkerDone('bossTongMon');
                     await sleep(getMsUntilMidnight() + 5000);
@@ -1260,7 +1452,15 @@ if (window !== window.top) {
             try {
                 // Inject script để đọc hh3dData từ MAIN world
                 const pageData = await injectAndReadHh3dData();
-                const spinRoute = pageData.lotterySpin || CONFIG.nonces.lotterySpin || "spin";
+                let spinRoute = pageData.lotterySpin || CONFIG.nonces.lotterySpin || "spin";
+
+                if (spinRoute === "spin") {
+                    const saved = await chrome.storage.local.get(['lastKnownSpinRoute']);
+                    if (saved.lastKnownSpinRoute) {
+                        spinRoute = saved.lastKnownSpinRoute;
+                        console.log("🎡 [Spin] Using last known spin route from storage:", spinRoute);
+                    }
+                }
 
                 const spinUrl = CONFIG.endpoints.spin + spinRoute;
                 const spinNonce = pageData.restNonce || CONFIG.nonces.restNonce || CONFIG.nonces.wp;
@@ -1287,6 +1487,11 @@ if (window !== window.top) {
                 } else {
                     const msg = result?.message || result?.data?.message || "";
                     if (msg.includes("hết lượt") || msg.includes("đã hết lượt")) {
+                        if (isNearMidnight()) {
+                            log("🎡 ⚠️ Đang gần nửa đêm. Không đánh dấu hoàn thành để tránh lỗi ngày mới. Thử lại sau 5 phút...", "warning");
+                            await sleep(300000);
+                            continue;
+                        }
                         log("🎡 ✅ Đã hoàn thành hôm nay. Chờ đến 0h hoặc Mốc 2...", "success");
                         await markWorkerDone('spin');
                         const wakeTime = Date.now() + getMsUntilMidnight() + 5000;
@@ -1349,6 +1554,11 @@ if (window !== window.top) {
                         // Check message hoàn thành sau khi mở rương
                         const resultMsg = result?.data?.message || result?.message || "";
                         if (resultMsg.includes("hoàn thành Thí Luyện Tông Môn") || resultMsg.includes("quay lại vào ngày kế tiếp")) {
+                            if (isNearMidnight()) {
+                                log("💎 ⚠️ Đang gần nửa đêm. Không đánh dấu hoàn thành để tránh lỗi ngày mới. Thử lại sau 5 phút...", "warning");
+                                await sleep(300000);
+                                continue;
+                            }
                             log("💎 ✅ Đã hoàn thành hôm nay", "success");
                             await markWorkerDone('tltm');
                             await sleep(getMsUntilMidnight() + 5000);
@@ -1368,6 +1578,11 @@ if (window !== window.top) {
                 } else {
                     const msg = check?.data?.message || check?.message || "";
                     if (msg.includes("hoàn thành Thí Luyện Tông Môn") || msg.includes("quay lại vào ngày kế tiếp")) {
+                        if (isNearMidnight()) {
+                            log("💎 ⚠️ Đang gần nửa đêm. Không đánh dấu hoàn thành để tránh lỗi ngày mới. Thử lại sau 5 phút...", "warning");
+                            await sleep(300000);
+                            continue;
+                        }
                         log("💎 ✅ Đã hoàn thành hôm nay", "success");
                         await markWorkerDone('tltm');
                         await sleep(getMsUntilMidnight() + 5000);
@@ -1459,76 +1674,90 @@ if (window !== window.top) {
     async function runVanDapWorker(sessionId) {
         log("❓ [Vấn Đáp] Started", "info");
 
-        try {
-            // Load answers từ file JSON
-            log("❓ Đang tải dữ liệu câu trả lời...", "info");
-            const loadedAnswers = await loadVanDapAnswers();
-            if (!loadedAnswers) {
-                log("❓ Không thể tải file answers.json → Dừng worker", "error");
-                return;
-            }
+        while (isRunning && sessionId === currentSessionId) {
+            try {
+                // Load answers từ file JSON
+                log("❓ Đang tải dữ liệu câu trả lời...", "info");
+                const loadedAnswers = await loadVanDapAnswers();
+                if (!loadedAnswers) {
+                    log("❓ Không thể tải file answers.json → Dừng worker", "error");
+                    return;
+                }
 
-            log("❓ Đang tải câu hỏi vấn đáp...", "info");
-            // Dynamically get action strings
-            const pageData = await fetchHh3dDataAndNonces("/van-dap-tong-mon");
-            const actionVdLoad = (pageData && pageData.act && pageData.act.vdLoad) ? pageData.act.vdLoad : "load_quiz_data";
-            const actionVdSave = (pageData && pageData.act && pageData.act.vdSave) ? pageData.act.vdSave : "save_quiz_result";
-            console.log(`❓ [Vấn Đáp] Actions: Load='${actionVdLoad}', Save='${actionVdSave}'`);
+                log("❓ Đang tải câu hỏi vấn đáp...", "info");
+                // Dynamically get action strings
+                const pageData = await fetchHh3dDataAndNonces("/van-dap-tong-mon");
+                const actionVdLoad = (pageData && pageData.act && pageData.act.vdLoad) ? pageData.act.vdLoad : "load_quiz_data";
+                const actionVdSave = (pageData && pageData.act && pageData.act.vdSave) ? pageData.act.vdSave : "save_quiz_result";
+                console.log(`❓ [Vấn Đáp] Actions: Load='${actionVdLoad}', Save='${actionVdSave}'`);
 
-            const quizData = await postForm(CONFIG.endpoints.api, {
-                action: actionVdLoad,
-                security_token: CONFIG.nonces.securityToken
-            });
-
-            if (!quizData?.success || !quizData?.data?.questions) {
-                log(`❓ Không có câu hỏi hoặc lỗi: ${quizData?.message || JSON.stringify(quizData)}`, "warning");
-                return;
-            }
-
-            const { questions, correct_answers, completed } = quizData.data;
-
-            if (completed) {
-                log(`❓ ✅ Đã hoàn thành vấn đáp hôm nay! Số câu đúng: ${correct_answers}`, "success");
-                await markWorkerDone('vanDap');
-                await sleep(getMsUntilMidnight() + 5000);
-                return;
-            }
-
-            log(`❓ Có ${questions.length} câu hỏi. Đã trả lời đúng: ${correct_answers || 0} câu`, "info");
-
-            for (const q of questions) {
-                if (!isRunning || sessionId !== currentSessionId) break;
-                const { id, question, options } = q;
-
-                log(`❓ --- Câu hỏi #${id} ---`, "info");
-                log(`❓ ${question}`, "info");
-
-                const answerIndex = findAnswer(question, options);
-                const selectedAnswer = options[answerIndex];
-                log(`❓ Đáp án tìm được: ${answerIndex}. ${selectedAnswer}`, "info");
-
-                log(`❓ Đang gửi câu trả lời...`, "info");
-                const result = await postForm(CONFIG.endpoints.api, {
-                    action: actionVdSave,
-                    question_id: id,
-                    answer: answerIndex,
+                const quizData = await postForm(CONFIG.endpoints.api, {
+                    action: actionVdLoad,
                     security_token: CONFIG.nonces.securityToken
                 });
 
-                if (result?.success && result?.data?.is_correct === 1) {
-                    log(`❓ ✓ Đúng: ${result.data.message}`, "success");
-                } else if (result?.success && result?.data?.is_correct === 2) {
-                    log(`❓ ✗ Sai: ${result.data.message}`, "warning");
-                } else {
-                    log(`❓ Lỗi: ${result?.message || result?.data?.message || "Unknown"}`, "error");
+                if (!quizData?.success || !quizData?.data?.questions) {
+                    log(`❓ Không có câu hỏi hoặc lỗi: ${quizData?.message || JSON.stringify(quizData)}`, "warning");
+                    await sleep(CONFIG.delays.error);
+                    continue;
                 }
-                await sleep(1000);
+
+                const { questions, correct_answers, completed } = quizData.data;
+
+                if (completed) {
+                    if (isNearMidnight()) {
+                        log("❓ ⚠️ Nhận trạng thái hoàn thành vấn đáp gần nửa đêm. Không đánh dấu hoàn thành để tránh lỗi ngày mới. Thử lại sau 5 phút...", "warning");
+                        await sleep(300000);
+                        continue;
+                    }
+                    log(`❓ ✅ Đã hoàn thành vấn đáp hôm nay! Số câu đúng: ${correct_answers}`, "success");
+                    await markWorkerDone('vanDap');
+                    await sleep(getMsUntilMidnight() + 5000);
+                    continue;
+                }
+
+                log(`❓ Có ${questions.length} câu hỏi. Đã trả lời đúng: ${correct_answers || 0} câu`, "info");
+
+                for (const q of questions) {
+                    if (!isRunning || sessionId !== currentSessionId) break;
+                    const { id, question, options } = q;
+
+                    log(`❓ --- Câu hỏi #${id} ---`, "info");
+                    log(`❓ ${question}`, "info");
+
+                    const answerIndex = findAnswer(question, options);
+                    const selectedAnswer = options[answerIndex];
+                    log(`❓ Đáp án tìm được: ${answerIndex}. ${selectedAnswer}`, "info");
+
+                    log(`❓ Đang gửi câu trả lời...`, "info");
+                    const result = await postForm(CONFIG.endpoints.api, {
+                        action: actionVdSave,
+                        question_id: id,
+                        answer: answerIndex,
+                        security_token: CONFIG.nonces.securityToken
+                    });
+
+                    if (result?.success && result?.data?.is_correct === 1) {
+                        log(`❓ ✓ Đúng: ${result.data.message}`, "success");
+                    } else if (result?.success && result?.data?.is_correct === 2) {
+                        log(`❓ ✗ Sai: ${result.data.message}`, "warning");
+                    } else {
+                        log(`❓ Lỗi: ${result?.message || result?.data?.message || "Unknown"}`, "error");
+                    }
+                    await sleep(1000);
+                }
+                log(`❓ ✅ Đã hoàn thành trả lời ${questions.length} câu hỏi!`, "success");
+                if (isNearMidnight()) {
+                    log("❓ ⚠️ Đang gần nửa đêm. Không đánh dấu hoàn thành để tránh lỗi ngày mới. Thử lại sau 5 phút...", "warning");
+                    await sleep(300000);
+                    continue;
+                }
+                await markWorkerDone('vanDap');
+                await sleep(getMsUntilMidnight() + 5000);
+            } catch (e) {
+                log(`❓ Error: ${e.message}`, "error");
+                await sleep(CONFIG.delays.error);
             }
-            log(`❓ ✅ Đã hoàn thành trả lời ${questions.length} câu hỏi!`, "success");
-            await markWorkerDone('vanDap');
-            await sleep(getMsUntilMidnight() + 5000);
-        } catch (e) {
-            log(`❓ Error: ${e.message}`, "error");
         }
     }
 
@@ -1558,6 +1787,11 @@ if (window !== window.top) {
                     }
 
                     if (resultDone) {
+                        if (isNearMidnight()) {
+                            log("🙏 ⚠️ Đang gần nửa đêm. Không đánh dấu hoàn thành để tránh lỗi ngày mới. Thử lại sau 5 phút...", "warning");
+                            await sleep(300000);
+                            continue;
+                        }
                         log("🙏 Đã tế lễ xong - Chờ đến 0h", "success");
                         await markWorkerDone('teLe');
                         await sleep(getMsUntilMidnight() + 5000);
@@ -1565,6 +1799,11 @@ if (window !== window.top) {
                         await sleep(CONFIG.delays.error);
                     }
                 } else if (check?.success === true) {
+                    if (isNearMidnight()) {
+                        log("🙏 ⚠️ Đang gần nửa đêm. Không đánh dấu hoàn thành để tránh lỗi ngày mới. Thử lại sau 5 phút...", "warning");
+                        await sleep(300000);
+                        continue;
+                    }
                     log(`🙏 Trạng thái: ${check?.message || "Đã tế lễ hoặc không cần tế lễ"}`, "success");
                     await markWorkerDone('teLe');
                     await sleep(getMsUntilMidnight() + 5000);
@@ -1572,6 +1811,11 @@ if (window !== window.top) {
                     const msg = check?.message || JSON.stringify(check);
                     log(`🙏 Check status thất bại: ${msg}`, "warning");
                     if (msg.includes('đã tế lễ') || msg.includes('Đã tế lễ') || msg.includes('hôm nay')) {
+                        if (isNearMidnight()) {
+                            log("🙏 ⚠️ Đang gần nửa đêm. Không đánh dấu hoàn thành để tránh lỗi ngày mới. Thử lại sau 5 phút...", "warning");
+                            await sleep(300000);
+                            continue;
+                        }
                         await markWorkerDone('teLe');
                         await sleep(getMsUntilMidnight() + 5000);
                         continue;
@@ -1613,6 +1857,7 @@ if (window !== window.top) {
                         claimedStages.add(stage);
                         if (stage === "stage2") {
                             forceSpinCheck = true;
+                            await clearWorkerDone('spin');
                             log("🎡 Đã nhận thành công Mốc 2 từ Auto Worker. Kích hoạt lượt quay mới!", "success");
                         }
                     } else {
@@ -1621,6 +1866,11 @@ if (window !== window.top) {
                         if (errMsg.includes("đã nhận") || errMsg.includes("hoàn thành")) {
                             log(`🎁 ${stage}: Đã nhận trước đó`, "info");
                             claimedStages.add(stage);
+                            if (stage === "stage2") {
+                                forceSpinCheck = true;
+                                await clearWorkerDone('spin');
+                                log("🎡 Mốc 2 đã nhận trước đó. Đảm bảo kích hoạt lượt quay mới!", "info");
+                            }
                         } else if (errMsg.includes("chưa đủ điều kiện") || errMsg.includes("chưa đạt")) {
                             log(`🎁 ${stage}: Chưa đủ điều kiện`, "warning");
                         } else {
@@ -1635,6 +1885,11 @@ if (window !== window.top) {
                 const allDone = claimedStages.size >= stages.length;
 
                 if (allDone) {
+                    if (isNearMidnight()) {
+                        log("🎁 ⚠️ Đang gần nửa đêm. Không đánh dấu hoàn thành để tránh lỗi ngày mới. Thử lại sau 5 phút...", "warning");
+                        await sleep(300000);
+                        continue;
+                    }
                     log("🎁 ✅ Đã nhận hết thưởng - Chờ đến 0h", "success");
                     await markWorkerDone('dailyReward');
                     await sleep(getMsUntilMidnight() + 5000);
@@ -1750,6 +2005,11 @@ if (window !== window.top) {
                             continue;
                         }
                         if (msg.includes("đạt đủ thưởng") || msg.includes("không thể vào")) {
+                            if (isNearMidnight()) {
+                                log("⛏️ ⚠️ Đang gần nửa đêm. Không đánh dấu hoàn thành để tránh lỗi ngày mới. Thử lại sau 5 phút...", "warning");
+                                await sleep(300000);
+                                continue;
+                            }
                             log(`⛏️ ✅ Đã đạt đủ thưởng ngày - Chờ đến 0h`, "success");
                             await markWorkerDone('mining');
                             await sleep(getMsUntilMidnight() + 5000);
@@ -1783,6 +2043,11 @@ if (window !== window.top) {
                             continue;
                         }
                         if (errMsg.includes("đạt đủ thưởng") || errMsg.includes("không thể vào")) {
+                            if (isNearMidnight()) {
+                                log("⛏️ ⚠️ Đang gần nửa đêm. Không đánh dấu hoàn thành để tránh lỗi ngày mới. Thử lại sau 5 phút...", "warning");
+                                await sleep(300000);
+                                continue;
+                            }
                             log(`⛏️ ✅ Đã đạt đủ thưởng ngày - Chờ đến 0h`, "success");
                             await markWorkerDone('mining');
                             await sleep(getMsUntilMidnight() + 5000);
@@ -1877,6 +2142,63 @@ if (window !== window.top) {
             });
         }
 
+        async function checkAndDecomposeIfFull(tier, data) {
+            const bag = data.pill_bag?.[tier] || {};
+            const stored = bag.stored != null ? parseInt(bag.stored, 10) : 0;
+            const cap = bag.cap != null ? parseInt(bag.cap, 10) : 0;
+            const isFull = bag.full != null ? !!bag.full : (cap > 0 && stored >= cap);
+
+            const autoDecompose = CONFIG.luyenDanConfig?.autoDecompose || false;
+            const decomposeTier = CONFIG.luyenDanConfig?.decomposeTier || "ha";
+            const decomposeStars = CONFIG.luyenDanConfig?.decomposeStars || "1-2";
+
+            if (isFull && autoDecompose && tier === decomposeTier) {
+                const matchStars = (stars) => {
+                    const s = parseInt(stars, 10);
+                    if (decomposeStars === "1") return s === 1;
+                    if (decomposeStars === "2") return s === 2;
+                    if (decomposeStars === "3") return s === 3;
+                    if (decomposeStars === "1-2") return s === 1 || s === 2;
+                    if (decomposeStars === "1-3") return s === 1 || s === 2 || s === 3;
+                    if (decomposeStars === "all") return true;
+                    return false;
+                };
+
+                let pillId = null;
+                let targetStars = null;
+
+                const lowStarPills = (data.pills || []).filter(p => p.tier === decomposeTier && matchStars(p.stars));
+                if (lowStarPills.length > 0) {
+                    const targetPill = lowStarPills[0];
+                    pillId = targetPill.id;
+                    targetStars = targetPill.stars;
+                } else {
+                    // Fallback to pill_stacks if pills is empty or not available
+                    const lowStarStacks = (data.pill_stacks || []).filter(p => p.tier === decomposeTier && matchStars(p.stars) && (p.count | 0) > 0);
+                    if (lowStarStacks.length > 0) {
+                        const targetStack = lowStarStacks[0];
+                        pillId = targetStack.stack_id || (targetStack.tier + ":" + targetStack.stars);
+                        targetStars = targetStack.stars;
+                    }
+                }
+
+                if (pillId) {
+                    log(`🧪 Túi đan phẩm ${decomposeTier.toUpperCase()} đã đầy. Tự động phân giải đan phù hợp (${decomposeStars}★) để lấy chỗ...`, "warning");
+                    log(`🧪 Đang phân giải đan phẩm ${decomposeTier.toUpperCase()} ${targetStars}★ (ID: ${pillId})...`, "info");
+                    const decompRes = await callLdApi("/decompose", "POST", { pill_id: String(pillId) });
+                    if (decompRes && decompRes.success !== false && !decompRes.code && (decompRes.success || decompRes.data)) {
+                        log(`🧪 ✅ Phân giải đan thành công!`, "success");
+                        return true;
+                    } else {
+                        log(`🧪 ❌ Phân giải đan thất bại: ${decompRes?.message || decompRes?.code || 'lỗi'}`, "error");
+                    }
+                } else {
+                    log(`🧪 ⚠️ Túi đan phẩm ${decomposeTier.toUpperCase()} đã đầy và không có đan phù hợp tiêu chí (${decomposeStars}★) để phân giải.`, "warning");
+                }
+            }
+            return false;
+        }
+
         while (isRunning && sessionId === currentSessionId) {
             try {
                 // Kiểm tra tab lock để tránh chạy trùng lặp ở nhiều tab
@@ -1908,10 +2230,10 @@ if (window !== window.top) {
                     const jobId = craft?.id || data.craftJobId;
                     if (jobId) {
                         const ackRes = await callLdApi("/ack-explosion", "POST", { job_id: jobId });
-                        if (ackRes && (ackRes.success || ackRes.data)) {
+                        if (ackRes && ackRes.success !== false && !ackRes.code && (ackRes.success || ackRes.data)) {
                             log("🧪 ✅ Đã dọn dẹp lò đan bị nổ", "success");
                         } else {
-                            log("🧪 ❌ Lỗi khi dọn dẹp lò đan nổ", "error");
+                            log(`🧪 ❌ Lỗi khi dọn dẹp lò đan nổ: ${ackRes?.message || ackRes?.code || 'lỗi'}`, "error");
                         }
                     } else {
                         log("🧪 ❌ Không tìm thấy job_id của lò nổ", "warning");
@@ -1921,11 +2243,18 @@ if (window !== window.top) {
                 }
 
                 if (furnace === "ready") {
+                    const finishedTier = craft?.ui_tier || data.tier || "ha";
+                    const didDecompose = await checkAndDecomposeIfFull(finishedTier, data);
+                    if (didDecompose) {
+                        await sleep(CONFIG.delays.success);
+                        continue;
+                    }
+
                     log("🧪 🎉 Luyện đan hoàn tất! Đang tiến hành Thu Đan...", "info");
                     const jobId = craft?.id || data.craftJobId;
                     if (jobId) {
                         const collectRes = await callLdApi("/collect", "POST", { job_id: jobId });
-                        if (collectRes && (collectRes.success || collectRes.data)) {
+                        if (collectRes && collectRes.success !== false && !collectRes.code && (collectRes.success || collectRes.data)) {
                             const pillName = collectRes.data?.pill_name || "Đan dược";
                             const stars = collectRes.data?.stars || 1;
                             log(`🧪 🏆 Thu hoạch thành công: ${pillName} ${"★".repeat(stars)}`, "success");
@@ -1934,14 +2263,14 @@ if (window !== window.top) {
                             if (pillId) {
                                 log(`🧪 Đang tự động sử dụng đan để tăng Tu Vi...`, "info");
                                 const useRes = await callLdApi("/use-pill", "POST", { pill_id: String(pillId) });
-                                if (useRes && (useRes.success || useRes.data)) {
+                                if (useRes && useRes.success !== false && !useRes.code && (useRes.success || useRes.data)) {
                                     log(`🧪 ✅ Đã sử dụng đan. Tu Vi nhận được: ${useRes.data?.tu_vi_granted || "thành công"}`, "success");
                                 } else {
-                                    log(`🧪 ⚠️ Lỗi khi sử dụng đan: ${useRes?.message || 'không thành công'}`, "warning");
+                                    log(`🧪 ⚠️ Lỗi khi sử dụng đan: ${useRes?.message || useRes?.code || 'không thành công'}`, "warning");
                                 }
                             }
                         } else {
-                            log(`🧪 ❌ Thu đan thất bại: ${collectRes?.message || 'lỗi mạng'}`, "error");
+                            log(`🧪 ❌ Thu đan thất bại: ${collectRes?.message || collectRes?.code || 'lỗi mạng'}`, "error");
                         }
                     } else {
                         log("🧪 ❌ Không tìm thấy job_id để thu đan", "warning");
@@ -1966,12 +2295,12 @@ if (window !== window.top) {
                             if (cooldown <= 0) {
                                 log(`🧪 🔥 Độ ổn định tụt xuống ${stability.toFixed(1)}% <= 68%. Tiến hành Điều Hỏa...`, "warning");
                                 const tuneRes = await callLdApi("/tune", "POST", {});
-                                if (tuneRes && (tuneRes.success || tuneRes.data)) {
+                                if (tuneRes && tuneRes.success !== false && !tuneRes.code && (tuneRes.success || tuneRes.data)) {
                                     const newStability = tuneRes.data?.craft?.stability_pct || stability;
                                     const newCount = tuneRes.data?.craft?.tune_count || (tuneCount + 1);
                                     log(`🧪 🔥 Điều Hỏa thành công! Độ ổn định mới: ${newStability}%. Giữ lửa: ${newCount}/${tuneSurvivalMin}`, "success");
                                 } else {
-                                    log(`🧪 ❌ Điều Hỏa thất bại: ${tuneRes?.message || 'lỗi'}`, "error");
+                                    log(`🧪 ❌ Điều Hỏa thất bại: ${tuneRes?.message || tuneRes?.code || 'lỗi'}`, "error");
                                 }
                                 await sleep(CONFIG.delays.success);
                                 continue;
@@ -1997,8 +2326,10 @@ if (window !== window.top) {
                 }
 
                 if (furnace === "idle") {
-                    const tiersOrder = ["cuc", "thuong", "trung", "ha"];
+                    const targetTier = CONFIG.luyenDanConfig?.targetTier || "auto";
+                    const tiersOrder = targetTier === "auto" ? ["cuc", "thuong", "trung", "ha"] : [targetTier];
                     let selectedTier = null;
+                    let lackOfTn = false;
 
                     for (const tier of tiersOrder) {
                         const rec = recipes[tier];
@@ -2006,14 +2337,27 @@ if (window !== window.top) {
                         if (isUnlocked) {
                             const vec = rec.vector || {};
                             let hasEnoughMats = true;
-                            for (const el of ["kim", "moc", "thuy", "hoa", "tho"]) {
-                                const need = vec[el] || 0;
-                                if ((materials[el] || 0) < need) {
+                            let totalNeed = 0;
+                            const vecKeys = Object.keys(vec);
+                            for (const el of vecKeys) {
+                                const need = parseInt(vec[el], 10) || 0;
+                                totalNeed += need;
+                                const owned = parseInt(materials[el], 10) || 0;
+                                if (owned < need) {
                                     hasEnoughMats = false;
                                     break;
                                 }
                             }
+                            if (totalNeed === 0) {
+                                hasEnoughMats = false;
+                            }
                             if (hasEnoughMats) {
+                                const tnCost = rec.tien_ngoc_cost != null ? (rec.tien_ngoc_cost | 0) : 0;
+                                const balance = data.tien_ngoc_balance != null ? (data.tien_ngoc_balance | 0) : 0;
+                                if (balance < tnCost) {
+                                    lackOfTn = true;
+                                    continue;
+                                }
                                 selectedTier = tier;
                                 break;
                             }
@@ -2021,13 +2365,31 @@ if (window !== window.top) {
                     }
 
                     if (selectedTier) {
+                        const didDecompose = await checkAndDecomposeIfFull(selectedTier, data);
+                        if (didDecompose) {
+                            await sleep(CONFIG.delays.success);
+                            continue;
+                        }
+
+                        const bag = data.pill_bag?.[selectedTier] || {};
+                        const stored = bag.stored != null ? parseInt(bag.stored, 10) : 0;
+                        const cap = bag.cap != null ? parseInt(bag.cap, 10) : 0;
+                        const isFull = bag.full != null ? !!bag.full : (cap > 0 && stored >= cap);
+                        if (isFull) {
+                            log(`🧪 ❌ Túi đan phẩm ${selectedTier.toUpperCase()} đã đầy. Vui lòng sử dụng hoặc phân giải đan. Dừng Luyện Đan Worker.`, "error");
+                            break;
+                        }
+
                         log(`🧪 Đủ nguyên liệu. Đang khai lò luyện phẩm: ${selectedTier.toUpperCase()}...`, "info");
                         const startRes = await callLdApi("/start", "POST", { tier: selectedTier });
-                        if (startRes && (startRes.success || startRes.data)) {
+                        if (startRes && startRes.success !== false && !startRes.code && (startRes.success || startRes.data)) {
                             log(`🧪 🔥 Khai lò Luyện Đan phẩm ${selectedTier.toUpperCase()} thành công!`, "success");
                         } else {
-                            log(`🧪 ❌ Khai lò thất bại: ${startRes?.message || 'lỗi'}`, "error");
+                            log(`🧪 ❌ Khai lò thất bại: ${startRes?.message || startRes?.code || 'lỗi'}`, "error");
                         }
+                    } else if (lackOfTn) {
+                        log("🧪 ❌ Thiếu Tiên Ngọc để khai lò luyện đan. Dừng Luyện Đan Worker.", "error");
+                        break;
                     } else {
                         log("🧪 ❌ Không đủ nguyên liệu ngũ hành để luyện đan. Thử mở các gói linh dược trong túi...", "warning");
                         const matBundles = data.mat_bundles || [];
@@ -2036,10 +2398,10 @@ if (window !== window.top) {
                             const bundleKey = bundle.bundle_key;
                             log(`🧪 📦 Phát hiện túi linh dược ${bundle.name || bundleKey}. Đang tự động mở...`, "info");
                             const openRes = await callLdApi("/open-mat-bundle", "POST", { job_id: String(bundleKey), bundle_key: String(bundleKey) });
-                            if (openRes && (openRes.success || openRes.data)) {
+                            if (openRes && openRes.success !== false && !openRes.code && (openRes.success || openRes.data)) {
                                 log(`🧪 ✅ Mở gói linh dược thành công!`, "success");
                             } else {
-                                log(`🧪 ❌ Mở gói linh dược thất bại: ${openRes?.message || 'lỗi'}`, "error");
+                                log(`🧪 ❌ Mở gói linh dược thất bại: ${openRes?.message || openRes?.code || 'lỗi'}`, "error");
                             }
                         } else {
                             log("🧪 ❌ Không còn nguyên liệu và gói linh dược nào. Dừng Luyện Đan Worker.", "error");
@@ -2093,35 +2455,7 @@ if (window !== window.top) {
                     continue;
                 }
 
-                // 2. Kiểm tra giới hạn Huyền Tinh ngày
-                const stats = await runInPage(`
-                    const usedEl = document.getElementById("mc-ht-daily-used");
-                    const capEl = document.getElementById("mc-ht-daily-cap");
-                    const used = usedEl ? parseInt(usedEl.textContent.trim()) : (typeof WP !== 'undefined' ? WP.htDailyUsed : null);
-                    const cap = capEl ? parseInt(capEl.textContent.trim()) : (typeof WP !== 'undefined' ? WP.htDailyCap : null);
-                    return { used, cap };
-                `);
-
-                if (stats && stats.used !== null) {
-                    const cap = stats.cap || 200;
-                    if (stats.used >= cap || stats.used >= 200) {
-                        log(`⚔️ Đã đạt giới hạn Huyền Tinh trong ngày (${stats.used}/${cap}). Dừng worker Mê Cung.`, "success");
-                        await markWorkerDone('meCung');
-                        break;
-                    }
-                }
-
-                // 3. Tự động tắt hộp thoại xác nhận khi có popups thông báo lỗi
-                await runInPage(`
-                    const confirmBtn = document.querySelector("#confirm-overlay .confirm-btn-ok");
-                    if (confirmBtn) {
-                        confirmBtn.click();
-                        return true;
-                    }
-                    return false;
-                `);
-
-                // 4. Lấy trạng thái hiện tại từ màn hình game
+                // 2. Lấy trạng thái hiện tại từ màn hình game
                 const screenState = await runInPage(`
                     const screenLoading = document.getElementById("screen-loading");
                     const screenBattle = document.getElementById("screen-battle");
@@ -2162,6 +2496,34 @@ if (window !== window.top) {
                     await sleep(3000);
                     continue;
                 }
+
+                // 3. Kiểm tra giới hạn Huyền Tinh ngày (Chỉ kiểm tra khi game đã load xong)
+                const stats = await runInPage(`
+                    const usedEl = document.getElementById("mc-ht-daily-used");
+                    const capEl = document.getElementById("mc-ht-daily-cap");
+                    const used = usedEl ? parseInt(usedEl.textContent.trim()) : (typeof WP !== 'undefined' ? WP.htDailyUsed : null);
+                    const cap = capEl ? parseInt(capEl.textContent.trim()) : (typeof WP !== 'undefined' ? WP.htDailyCap : null);
+                    return { used, cap };
+                `);
+
+                if (stats && stats.used !== null) {
+                    const cap = stats.cap || 200;
+                    if (stats.used >= cap || stats.used >= 200) {
+                        log(`⚔️ Đã đạt giới hạn Huyền Tinh trong ngày (${stats.used}/${cap}). Dừng worker Mê Cung.`, "success");
+                        await markWorkerDone('meCung');
+                        break;
+                    }
+                }
+
+                // 4. Tự động tắt hộp thoại xác nhận khi có popups thông báo lỗi
+                await runInPage(`
+                    const confirmBtn = document.querySelector("#confirm-overlay .confirm-btn-ok");
+                    if (confirmBtn) {
+                        confirmBtn.click();
+                        return true;
+                    }
+                    return false;
+                `);
 
                 if (screenState.inBattle) {
                     // Màn hình chiến đấu: Đảm bảo các cài đặt tự động chiến đấu luôn bật
@@ -2369,6 +2731,16 @@ if (window !== window.top) {
                         break;
                     }
 
+                    const todayString = new Date().toDateString();
+                    if (window.__pageLoadDate && window.__pageLoadDate !== todayString) {
+                        log("📅 Trang game được tải từ ngày cũ. Đang tự động tải lại trang để tránh dữ liệu lỗi...", "warning");
+                        setTimeout(() => {
+                            window.location.reload();
+                        }, 1000);
+                        sendResponse({ success: true });
+                        break;
+                    }
+
                     if (isRunning) {
                         log("🔄 Workers already running, restarting...", "info");
                         isRunning = false;
@@ -2390,9 +2762,17 @@ if (window !== window.top) {
                         CONFIG.mecungConfig.role = message.mecungConfig.role || "member";
                     }
 
+                    if (message.luyenDanConfig) {
+                        CONFIG.luyenDanConfig.targetTier = message.luyenDanConfig.targetTier || "auto";
+                        CONFIG.luyenDanConfig.autoDecompose = !!message.luyenDanConfig.autoDecompose;
+                        CONFIG.luyenDanConfig.decomposeTier = message.luyenDanConfig.decomposeTier || "ha";
+                        CONFIG.luyenDanConfig.decomposeStars = message.luyenDanConfig.decomposeStars || "1-2";
+                    }
+
                     const activeWorkers = [];
                     for (const name of message.workers) {
-                        if (await isWorkerDone(name)) {
+                        // Vòng quay (spin) có thể nhận thêm lượt trong ngày (từ Mốc 2), nên không bỏ qua khi startup
+                        if (name !== 'spin' && await isWorkerDone(name)) {
                             const vnNames = { chest: 'Rương', boss: 'Boss HV', bossTongMon: 'Boss TM', spin: 'Quay', tltm: 'TLTM', vanDap: 'Vấn Đáp', teLe: 'Tế Lễ', dailyReward: 'Daily', mining: 'Đào Mỏ', luyenDan: 'Luyện Đan', meCung: 'Mê Cung' };
                             log(`ℹ️ ${vnNames[name] || name} đã xong hôm nay. Bỏ qua.`, 'success');
                             continue;
@@ -2426,9 +2806,10 @@ if (window !== window.top) {
                     activeWorkerNames = message.workers;
                     savedMiningConfig = message.miningConfig;
                     savedMecungConfig = message.mecungConfig;
+                    savedLuyenDanConfig = message.luyenDanConfig;
 
                     // Save to storage for auto-resume on tab refresh
-                    await saveWorkerConfig(message.workers, message.miningConfig, message.mecungConfig);
+                    await saveWorkerConfig(message.workers, message.miningConfig, message.mecungConfig, message.luyenDanConfig);
 
                     // Start heartbeat
                     startHeartbeat();
@@ -2441,6 +2822,7 @@ if (window !== window.top) {
                     activeWorkerNames = [];
                     savedMiningConfig = null;
                     savedMecungConfig = null;
+                    savedLuyenDanConfig = null;
                     stopHeartbeat();
                     // Clear saved config so we don't auto-resume
                     await clearWorkerConfig();
@@ -2468,6 +2850,14 @@ if (window !== window.top) {
                         });
                     }
                     sendResponse({ success: true, currentState: isRunning });
+                    break;
+
+                case 'NEW_DAY_RESET':
+                    log("🌅 Nhận thông báo ngày mới từ background. Đang tải lại trang...", "info");
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 1000);
+                    sendResponse({ success: true });
                     break;
 
                 case 'LOAD_MINES':
@@ -2502,6 +2892,22 @@ if (window !== window.top) {
 
         return true;
     });
+
+    // Auto-save spin route if we are on the spin page
+    if (window.location.pathname.includes('/vong-quay-phuc-van/')) {
+        setTimeout(async () => {
+            try {
+                const pageData = await injectAndReadHh3dData();
+                const route = pageData.lotterySpin;
+                if (route && route !== "spin") {
+                    await chrome.storage.local.set({ lastKnownSpinRoute: route });
+                    console.log("🎡 [Auto-Save] Saved last known spin route:", route);
+                }
+            } catch (e) {
+                console.error("Failed to auto-save spin route:", e);
+            }
+        }, 1000);
+    }
 
     // Notify that content script is ready
     safeSendMessage({ type: 'CONTENT_READY' });

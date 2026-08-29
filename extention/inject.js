@@ -7,7 +7,7 @@
             data.restNonce = hh3dData.restNonce || null;
             data.userId = hh3dData.userId || null;
             if (hh3dData.act) {
-                data.lotterySpin = hh3dData.act.lotterySpin || null;
+                data.lotterySpin = hh3dData.act.lotterySpin || hh3dData.act.spin || hh3dData.act.luckySpin || hh3dData.act.quay || hh3dData.act.quaySo || hh3dData.act.lottery || hh3dData.act.vongQuay || null;
             }
         }
         window.postMessage({ type: '__hh3d_bridge__', payload: data }, '*');

@@ -9,6 +9,9 @@ const logContainer = document.getElementById('logContainer');
 const currentTime = document.getElementById('currentTime');
 const domainText = document.getElementById('domainText');
 
+const hh3dHostPattern = /(?:^|\.)hoathinh3d\.[a-z.]+$/i;
+let tabGuardOverlay = null;
+
 // Mining config elements
 const mineTypeSelect = document.getElementById('mineType');
 const mineSelect = document.getElementById('mineSelect');
@@ -21,6 +24,15 @@ const mcRoleSelect = document.getElementById('mcRole');
 const miningSection = document.getElementById('miningSection');
 const mecungSection = document.getElementById('mecungSection');
 
+// Luyện Đan config elements
+const ldTargetTierSelect = document.getElementById('ldTargetTier');
+const ldAutoDecomposeCheckbox = document.getElementById('ldAutoDecompose');
+const ldDecomposeTierSelect = document.getElementById('ldDecomposeTier');
+const ldDecomposeTierRow = document.getElementById('ldDecomposeTierRow');
+const ldDecomposeStarsSelect = document.getElementById('ldDecomposeStars');
+const ldDecomposeStarsRow = document.getElementById('ldDecomposeStarsRow');
+const luyenDanSection = document.getElementById('luyenDanSection');
+
 let isRunning = false;
 let minesData = []; // Store loaded mines
 
@@ -28,10 +40,24 @@ document.addEventListener('DOMContentLoaded', () => {
   loadState();
   updateTime();
   setInterval(updateTime, 1000);
+  checkActiveTabAccess();
+
+  if (chrome.tabs?.onActivated) {
+    chrome.tabs.onActivated.addListener(checkActiveTabAccess);
+  }
+
+  if (chrome.tabs?.onUpdated) {
+    chrome.tabs.onUpdated.addListener((_tabId, changeInfo) => {
+      if (changeInfo.status === 'complete' || changeInfo.url) checkActiveTabAccess();
+    });
+  }
 
   chrome.runtime.onMessage.addListener((message) => {
     if (message.type === 'LOG') addLog(message.data.message, message.data.level);
     else if (message.type === 'STATUS_UPDATE') updateStatus(message.data.isRunning);
+    else if (message.type === 'LOGS_CLEARED') {
+      logContainer.innerHTML = '<p class="log-empty">Chưa có log nào...</p>';
+    }
   });
 
   chrome.runtime.sendMessage({ type: 'GET_STATUS' }, (response) => {
@@ -47,11 +73,53 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 
+async function checkActiveTabAccess() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const isHH3D = isHH3DTab(tab);
+    setTabGuardVisible(!isHH3D, tab?.url);
+  } catch (e) {
+    setTabGuardVisible(true);
+  }
+}
+
+function isHH3DTab(tab) {
+  if (!tab?.url) return false;
+
+  try {
+    return hh3dHostPattern.test(new URL(tab.url).hostname.toLowerCase());
+  } catch (e) {
+    return false;
+  }
+}
+
+function setTabGuardVisible(visible, url = '') {
+  if (!tabGuardOverlay) {
+    tabGuardOverlay = document.createElement('div');
+    tabGuardOverlay.className = 'tab-guard-overlay';
+    tabGuardOverlay.innerHTML = `
+      <div class="tab-guard-card">
+        <div class="tab-guard-icon">🐉</div>
+        <h2>Chỉ ghim UI trên hoathinh3d</h2>
+        <p>Mở hoặc chuyển về tab hoathinh3d để dùng HH3D Auto Tool.</p>
+        <small id="tabGuardUrl"></small>
+      </div>
+    `;
+    document.body.appendChild(tabGuardOverlay);
+  }
+
+  const urlText = tabGuardOverlay.querySelector('#tabGuardUrl');
+  if (urlText) urlText.textContent = url || '';
+  tabGuardOverlay.classList.toggle('visible', visible);
+}
+
 function updateConfigSectionsVisibility() {
   const miningCb = Array.from(workerCheckboxes).find(cb => cb.value === 'mining');
   const meCungCb = Array.from(workerCheckboxes).find(cb => cb.value === 'meCung');
+  const luyenDanCb = Array.from(workerCheckboxes).find(cb => cb.value === 'luyenDan');
   if (miningSection) miningSection.style.display = (miningCb && miningCb.checked) ? 'block' : 'none';
   if (mecungSection) mecungSection.style.display = (meCungCb && meCungCb.checked) ? 'block' : 'none';
+  if (luyenDanSection) luyenDanSection.style.display = (luyenDanCb && luyenDanCb.checked) ? 'block' : 'none';
 }
 
 toggleAll.addEventListener('change', () => {
@@ -80,6 +148,17 @@ mineSelect.addEventListener('change', saveState);
 // Mê Cung config change handlers
 mcMinPlayersSelect.addEventListener('change', saveState);
 mcRoleSelect.addEventListener('change', saveState);
+
+// Luyện Đan config change handlers
+ldTargetTierSelect.addEventListener('change', saveState);
+ldAutoDecomposeCheckbox.addEventListener('change', () => {
+  const visible = ldAutoDecomposeCheckbox.checked ? 'flex' : 'none';
+  ldDecomposeTierRow.style.display = visible;
+  ldDecomposeStarsRow.style.display = visible;
+  saveState();
+});
+ldDecomposeTierSelect.addEventListener('change', saveState);
+ldDecomposeStarsSelect.addEventListener('change', saveState);
 
 // Check Mines Button
 checkMinesBtn.addEventListener('click', async () => {
@@ -141,12 +220,21 @@ startBtn.addEventListener('click', async () => {
     role: mcRoleSelect.value || 'member'
   };
 
+  // Lấy Luyện Đan config
+  const luyenDanConfig = {
+    targetTier: ldTargetTierSelect.value || 'auto',
+    autoDecompose: ldAutoDecomposeCheckbox.checked,
+    decomposeTier: ldDecomposeTierSelect.value || 'ha',
+    decomposeStars: ldDecomposeStarsSelect.value || '1-2'
+  };
+
   startBtn.disabled = true;
   const response = await chrome.runtime.sendMessage({
     type: 'START',
     workers: selectedWorkers,
     miningConfig: miningConfig,
-    mecungConfig: mecungConfig
+    mecungConfig: mecungConfig,
+    luyenDanConfig: luyenDanConfig
   });
   if (response.success) { updateStatus(true); }
   else addLog(`❌ Lỗi: ${response.error}`, 'error');
@@ -199,6 +287,12 @@ function saveState() {
       minPlayers: mcMinPlayersSelect.value,
       role: mcRoleSelect.value
     },
+    luyenDanConfig: {
+      targetTier: ldTargetTierSelect.value,
+      autoDecompose: ldAutoDecomposeCheckbox.checked,
+      decomposeTier: ldDecomposeTierSelect.value,
+      decomposeStars: ldDecomposeStarsSelect.value
+    },
     // Lưu danh sách mỏ đã load
     minesData: minesData
   };
@@ -245,6 +339,25 @@ function loadState() {
         }
         if (result.popupState.mecungConfig.role) {
           mcRoleSelect.value = result.popupState.mecungConfig.role;
+        }
+      }
+
+      // Load Luyện Đan config
+      if (result.popupState.luyenDanConfig) {
+        if (result.popupState.luyenDanConfig.targetTier) {
+          ldTargetTierSelect.value = result.popupState.luyenDanConfig.targetTier;
+        }
+        if (result.popupState.luyenDanConfig.autoDecompose !== undefined) {
+          ldAutoDecomposeCheckbox.checked = result.popupState.luyenDanConfig.autoDecompose;
+          const visible = ldAutoDecomposeCheckbox.checked ? 'flex' : 'none';
+          ldDecomposeTierRow.style.display = visible;
+          ldDecomposeStarsRow.style.display = visible;
+        }
+        if (result.popupState.luyenDanConfig.decomposeTier) {
+          ldDecomposeTierSelect.value = result.popupState.luyenDanConfig.decomposeTier;
+        }
+        if (result.popupState.luyenDanConfig.decomposeStars) {
+          ldDecomposeStarsSelect.value = result.popupState.luyenDanConfig.decomposeStars;
         }
       }
 

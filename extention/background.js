@@ -95,6 +95,68 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     injectedTabs.delete(tabId);
 });
 
+// ============= SIDE PANEL UI =============
+async function setupSidePanel(tab) {
+    if (!chrome.sidePanel || !tab?.id) return false;
+
+    const enabled = isHH3DUrl(tab.url);
+
+    try {
+        await chrome.sidePanel.setOptions({
+            tabId: tab.id,
+            path: enabled ? 'popup.html' : 'sidepanel-disabled.html',
+            enabled: true
+        });
+        return enabled;
+    } catch (e) {
+        console.warn('Side panel options setup failed:', e?.message || e);
+        return false;
+    }
+}
+
+async function syncSidePanelForTab(tabId) {
+    if (!chrome.sidePanel || !tabId) return;
+
+    try {
+        const tab = await chrome.tabs.get(tabId);
+        await setupSidePanel(tab);
+    } catch (e) {
+        console.warn('Side panel sync failed:', e?.message || e);
+    }
+}
+
+if (chrome.sidePanel) {
+    chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((error) => {
+        console.warn('Side panel behavior setup failed:', error?.message || error);
+    });
+}
+
+chrome.action.onClicked.addListener((tab) => {
+    if (!chrome.sidePanel || !tab?.id) return;
+
+    (async () => {
+        const enabled = await setupSidePanel(tab);
+        if (!enabled) {
+            addLog('ℹ️ Side Panel chỉ bật trên trang hoathinh3d', 'info');
+            return;
+        }
+
+        try {
+            await chrome.sidePanel.open({ tabId: tab.id });
+        } catch (tabOpenError) {
+            try {
+                await chrome.sidePanel.open({ windowId: tab.windowId });
+            } catch (windowOpenError) {
+                console.warn('Side panel open failed:', windowOpenError?.message || tabOpenError?.message || windowOpenError);
+            }
+        }
+    })();
+});
+
+chrome.tabs.onActivated.addListener((activeInfo) => {
+    syncSidePanelForTab(activeInfo.tabId);
+});
+
 // ============= KEEP-ALIVE MECHANISM =============
 async function setupKeepAlive() {
     try {
@@ -107,14 +169,61 @@ async function setupKeepAlive() {
     }
 }
 
+function getTodayKey() {
+    const d = new Date();
+    return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+}
+
+async function checkAndResetNewDay() {
+    try {
+        const today = getTodayKey();
+        const result = await chrome.storage.local.get(['lastActiveDate']);
+        const lastDate = result.lastActiveDate;
+
+        if (lastDate && lastDate !== today) {
+            console.log(`🌅 Phát hiện ngày mới! (Trước: ${lastDate}, Nay: ${today}). Reset logs và completion...`);
+            
+            // Clear memory logs
+            logs = [];
+            
+            // Clear daily completion from storage
+            await chrome.storage.local.remove(['dailyCompletion']);
+            
+            // Save new active date and reset stored logs
+            await chrome.storage.local.set({ lastActiveDate: today, logs: [] });
+            
+            // Broadcast to popup
+            chrome.runtime.sendMessage({ type: 'LOGS_CLEARED' }).catch(() => {});
+            
+            if (isRunning) {
+                addLog(`🌅 Bắt đầu ngày mới ${today} - Tự động reset trạng thái và chạy tiếp`, "success");
+                
+                // Notify all active content scripts
+                const tabs = await findHH3DTabs();
+                for (const tab of tabs) {
+                    try {
+                        chrome.tabs.sendMessage(tab.id, { type: 'NEW_DAY_RESET' }).catch(() => {});
+                    } catch (e) {}
+                }
+            }
+        } else if (!lastDate) {
+            await chrome.storage.local.set({ lastActiveDate: today });
+        }
+    } catch (e) {
+        console.error('Error checking new day:', e);
+    }
+}
+
 chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === KEEP_ALIVE_ALARM) {
         console.log('⏰ Keep-alive ping at', new Date().toLocaleTimeString());
         chrome.storage.local.get(['lastPing'], () => {
             chrome.storage.local.set({ lastPing: Date.now() });
         });
+        checkAndResetNewDay();
     }
 });
+
 
 // ============= STATE PERSISTENCE =============
 async function saveState() {
@@ -128,12 +237,13 @@ async function saveState() {
     }
 }
 
-async function saveWorkerConfig(workers, miningConfig, mecungConfig) {
+async function saveWorkerConfig(workers, miningConfig, mecungConfig, luyenDanConfig) {
     try {
         await chrome.storage.local.set({
             savedWorkers: workers,
             savedMiningConfig: miningConfig,
             savedMecungConfig: mecungConfig,
+            savedLuyenDanConfig: luyenDanConfig,
             savedAt: Date.now()
         });
         console.log('💾 Worker config saved by background');
@@ -144,7 +254,7 @@ async function saveWorkerConfig(workers, miningConfig, mecungConfig) {
 
 async function clearWorkerConfig() {
     try {
-        await chrome.storage.local.remove(['savedWorkers', 'savedMiningConfig', 'savedMecungConfig', 'savedAt']);
+        await chrome.storage.local.remove(['savedWorkers', 'savedMiningConfig', 'savedMecungConfig', 'savedLuyenDanConfig', 'savedAt']);
         console.log('🗑️ Worker config cleared by background');
     } catch (e) {
         console.error('Failed to clear worker config:', e);
@@ -287,13 +397,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                             type: 'START',
                             workers: message.workers,
                             miningConfig: message.miningConfig,
-                            mecungConfig: message.mecungConfig
+                            mecungConfig: message.mecungConfig,
+                            luyenDanConfig: message.luyenDanConfig
                         }, { frameId: 0 });
 
                         if (response?.success) {
                             isRunning = true;
                             await saveState();
-                            await saveWorkerConfig(message.workers, message.miningConfig, message.mecungConfig);
+                            await saveWorkerConfig(message.workers, message.miningConfig, message.mecungConfig, message.luyenDanConfig);
                             chrome.runtime.sendMessage({ type: 'STATUS_UPDATE', data: { isRunning: true } }).catch(() => { });
                             sendResponse({ success: true });
                         } else {
@@ -379,6 +490,8 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     // Chỉ xử lý khi tab load xong
     if (changeInfo.status !== 'complete') return;
 
+    await syncSidePanelForTab(tabId);
+
     if (tab.url && isHH3DUrl(tab.url)) {
         console.log(`🌐 Phát hiện HH3D tab: ${tab.url}`);
 
@@ -418,6 +531,9 @@ async function initialize() {
     // Load persisted state
     await loadState();
     await loadDetectedDomain();
+
+    // Check if day changed since last run
+    await checkAndResetNewDay();
 
     // Setup keep-alive alarm
     await setupKeepAlive();

@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HH3D Auto Tool - Chỉ hỗ trợ hoathinh3d</title>
+    <style>
+        :root {
+            --bg-primary: #0f0f1a;
+            --bg-card: rgba(30, 30, 50, 0.86);
+            --text-primary: #ffffff;
+            --text-secondary: #a0a0b0;
+            --accent-primary: #7c3aed;
+            --accent-secondary: #a855f7;
+            --border-color: rgba(124, 58, 237, 0.32);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            min-height: 100vh;
+            display: grid;
+            place-items: center;
+            padding: 18px;
+            font-family: 'Segoe UI', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            color: var(--text-primary);
+            background: radial-gradient(circle at top left, rgba(124, 58, 237, 0.3), transparent 36%),
+                radial-gradient(circle at bottom right, rgba(16, 185, 129, 0.12), transparent 30%),
+                var(--bg-primary);
+        }
+
+        .panel-empty {
+            width: 100%;
+            padding: 22px;
+            text-align: center;
+            border: 1px solid var(--border-color);
+            border-radius: 18px;
+            background: var(--bg-card);
+            box-shadow: 0 22px 60px rgba(0, 0, 0, 0.35);
+            backdrop-filter: blur(12px);
+        }
+
+        .icon {
+            display: inline-grid;
+            place-items: center;
+            width: 58px;
+            height: 58px;
+            margin-bottom: 14px;
+            border-radius: 18px;
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+            box-shadow: 0 0 30px rgba(124, 58, 237, 0.38);
+            font-size: 30px;
+        }
+
+        h1 {
+            margin-bottom: 8px;
+            font-size: 18px;
+            line-height: 1.25;
+        }
+
+        p {
+            color: var(--text-secondary);
+            font-size: 13px;
+            line-height: 1.55;
+        }
+    </style>
+</head>
+
+<body>
+    <main class="panel-empty" aria-label="HH3D Auto Tool chỉ hoạt động trên hoathinh3d">
+        <div class="icon">🐉</div>
+        <h1>Chỉ ghim UI trên hoathinh3d</h1>
+        <p>Mở hoặc chuyển về tab hoathinh3d để dùng HH3D Auto Tool.</p>
+    </main>
+</body>
+
+</html>

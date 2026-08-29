@@ -47,7 +47,7 @@ Extension tự nhận diện domain đang hoạt động, tự inject script và
 
 3. Bật **Developer mode**.
 4. Chọn **Load unpacked**.
-5. Chọn thư mục `extention` chứa `manifest.json`.
+5. Chọn thư mục extension chứa `manifest.json`.
 6. Truy cập `hoathinh3d.*` và đăng nhập tài khoản.
 
 ## Sử dụng
@@ -71,20 +71,19 @@ Extension tự nhận diện domain đang hoạt động, tự inject script và
 ## Cấu trúc thư mục
 
 ```text
-auto-hh3d-main/
-├── README.md              # Tài liệu dự án
-└── extention/
-    ├── manifest.json      # Manifest V3
-    ├── background.js      # Service worker, quản lý tab và inject script
-    ├── content.js         # Logic worker chính
-    ├── inject.js          # Bridge đọc dữ liệu từ page context
-    ├── popup.html         # Giao diện popup
-    ├── popup.css          # Style popup
-    ├── popup.js           # Logic popup
-    ├── luyen-dan.js       # Logic liên quan Luyện Đan
-    ├── answers.json       # Dữ liệu đáp án Vấn Đáp
-    ├── icons/             # Icon extension
-    └── *.txt              # Ghi chú/phân tích endpoint, page source
+extention/
+├── manifest.json          # Manifest V3
+├── background.js          # Service worker, quản lý tab và inject script
+├── content.js             # Logic worker chính
+├── inject.js              # Bridge đọc dữ liệu từ page context
+├── popup.html             # Giao diện popup
+├── popup.css              # Style popup
+├── popup.js               # Logic popup
+├── luyen-dan.js           # Logic liên quan Luyện Đan
+├── answers.json           # Dữ liệu đáp án Vấn Đáp
+├── icons/                 # Icon extension
+├── *.txt                  # Ghi chú/phân tích endpoint, page source
+└── README.md              # Tài liệu dự án
 ```
 
 ## Quyền Chrome Extension

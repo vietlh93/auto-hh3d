@@ -21,6 +21,7 @@ const mineHint = document.getElementById('mineHint');
 // Mê Cung config elements
 const mcMinPlayersSelect = document.getElementById('mcMinPlayers');
 const mcRoleSelect = document.getElementById('mcRole');
+const mcMaxCapInput = document.getElementById('mcMaxCap');
 const miningSection = document.getElementById('miningSection');
 const mecungSection = document.getElementById('mecungSection');
 
@@ -148,6 +149,7 @@ mineSelect.addEventListener('change', saveState);
 // Mê Cung config change handlers
 mcMinPlayersSelect.addEventListener('change', saveState);
 mcRoleSelect.addEventListener('change', saveState);
+if (mcMaxCapInput) mcMaxCapInput.addEventListener('change', saveState);
 
 // Luyện Đan config change handlers
 ldTargetTierSelect.addEventListener('change', saveState);
@@ -216,8 +218,9 @@ startBtn.addEventListener('click', async () => {
 
   // Lấy Mê Cung config
   const mecungConfig = {
-    minPlayers: mcMinPlayersSelect.value ? parseInt(mcMinPlayersSelect.value) : 5,
-    role: mcRoleSelect.value || 'member'
+    minPlayers: mcMinPlayersSelect.value ? parseInt(mcMinPlayersSelect.value, 10) : 5,
+    role: mcRoleSelect.value || 'member',
+    maxCap: (mcMaxCapInput && mcMaxCapInput.value) ? parseInt(mcMaxCapInput.value, 10) : null
   };
 
   // Lấy Luyện Đan config
@@ -285,7 +288,8 @@ function saveState() {
     },
     mecungConfig: {
       minPlayers: mcMinPlayersSelect.value,
-      role: mcRoleSelect.value
+      role: mcRoleSelect.value,
+      maxCap: mcMaxCapInput ? mcMaxCapInput.value : ''
     },
     luyenDanConfig: {
       targetTier: ldTargetTierSelect.value,
@@ -339,6 +343,9 @@ function loadState() {
         }
         if (result.popupState.mecungConfig.role) {
           mcRoleSelect.value = result.popupState.mecungConfig.role;
+        }
+        if (mcMaxCapInput && result.popupState.mecungConfig.maxCap !== undefined) {
+          mcMaxCapInput.value = result.popupState.mecungConfig.maxCap;
         }
       }
 

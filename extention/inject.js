@@ -10,6 +10,10 @@
                 data.lotterySpin = hh3dData.act.lotterySpin || hh3dData.act.spin || hh3dData.act.luckySpin || hh3dData.act.quay || hh3dData.act.quaySo || hh3dData.act.lottery || hh3dData.act.vongQuay || null;
             }
         }
+        if (typeof HH3DBossConfig !== 'undefined') {
+            data.bossNonce = HH3DBossConfig.nonce || null;
+            data.bossAttackToken = HH3DBossConfig.attackToken || null;
+        }
         window.postMessage({ type: '__hh3d_bridge__', payload: data }, '*');
     } catch (e) {
         window.postMessage({ type: '__hh3d_bridge__', payload: {} }, '*');

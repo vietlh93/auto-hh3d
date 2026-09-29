@@ -57,7 +57,8 @@ if (window !== window.top) {
         },
         mecungConfig: {
             minPlayers: 5,
-            role: "member"
+            role: "member",
+            maxCap: null
         },
         luyenDanConfig: {
             targetTier: "auto",
@@ -222,6 +223,35 @@ if (window !== window.top) {
             console.error("Failed to decrypt hh3d actions:", e);
             return null;
         }
+    }
+
+    // Helper trích xuất window.HH3DBossConfig từ HTML của trang /hoang-vuc
+    function extractBossConfig(html) {
+        if (!html) return null;
+        try {
+            const match = html.match(/(?:window\.)?HH3DBossConfig\s*=\s*({[\s\S]*?});/);
+            if (match && match[1]) {
+                const cfg = JSON.parse(match[1]);
+                return {
+                    nonce: cfg.nonce || null,
+                    attackToken: cfg.attackToken || null,
+                    maintenanceRemaining: cfg.maintenanceRemaining ?? null,
+                    useAttackWorker: cfg.useAttackWorker ?? null
+                };
+            }
+        } catch (e) { }
+
+        // Fallback regex nếu JSON.parse không bắt được
+        const nonceMatch = html.match(/HH3DBossConfig[\s\S]*?["']?nonce["']?\s*:\s*["']([a-f0-9]{10})["']/i);
+        const tokenMatch = html.match(/HH3DBossConfig[\s\S]*?["']?attackToken["']?\s*:\s*["']([a-f0-9]{32})["']/i)
+            || html.match(/["']?attackToken["']?\s*:\s*["']([a-f0-9]{32})["']/i);
+        if (nonceMatch || tokenMatch) {
+            return {
+                nonce: nonceMatch ? nonceMatch[1] : null,
+                attackToken: tokenMatch ? tokenMatch[1] : null
+            };
+        }
+        return null;
     }
 
     // Helper to execute code in the page context via inject.js
@@ -391,8 +421,9 @@ if (window !== window.top) {
                     let mecungConfig = null;
                     if (result.popupState.mecungConfig) {
                         mecungConfig = {
-                            minPlayers: result.popupState.mecungConfig.minPlayers ? parseInt(result.popupState.mecungConfig.minPlayers) : 5,
-                            role: result.popupState.mecungConfig.role || 'member'
+                            minPlayers: result.popupState.mecungConfig.minPlayers ? parseInt(result.popupState.mecungConfig.minPlayers, 10) : 5,
+                            role: result.popupState.mecungConfig.role || 'member',
+                            maxCap: result.popupState.mecungConfig.maxCap ? parseInt(result.popupState.mecungConfig.maxCap, 10) : null
                         };
                     }
 
@@ -465,8 +496,9 @@ if (window !== window.top) {
 
             // Apply Mê Cung config if exists
             if (config.mecungConfig) {
-                CONFIG.mecungConfig.minPlayers = config.mecungConfig.minPlayers || 5;
+                CONFIG.mecungConfig.minPlayers = parseInt(config.mecungConfig.minPlayers, 10) || 5;
                 CONFIG.mecungConfig.role = config.mecungConfig.role || 'member';
+                CONFIG.mecungConfig.maxCap = config.mecungConfig.maxCap ? parseInt(config.mecungConfig.maxCap, 10) : null;
             }
 
             // Apply Luyện Đan config if exists
@@ -816,11 +848,11 @@ if (window !== window.top) {
                 /phuc_loi[^}]*security["\s:]+["']([a-f0-9]{10})["']/i,
             ],
             boss: [
+                /HH3DBossConfig[\s\S]*?["']nonce["']\s*:\s*["']([a-f0-9]{10})["']/i,
                 /attack_boss[^}]{0,300}nonce["\':=\s]+["']([a-f0-9]{10})["']/i,
                 /action[=:]"attack_boss"[^)]*nonce["\':=\s]+["']([a-f0-9]{10})["']/i,
                 /\.ajax\([^)]*attack_boss[^)]*nonce["\':=\s]+["']([a-f0-9]{10})["']/i,
-                /boss[_-]?nonce["\':=\s]+["']([a-f0-9]{10})["']/i,
-                /nonce["\':=\s]+["']([a-f0-9]{10})["']/i
+                /boss[_-]?nonce["\':=\s]+["']([a-f0-9]{10})["']/i
             ],
             wp: [
                 /wpApiSettings\s*=\s*{[^}]*nonce\s*:\s*"([a-f0-9]{10})"/i,
@@ -851,6 +883,9 @@ if (window !== window.top) {
                 /bossAttack\s*:\s*["']([^"']+)["']/i,
             ],
             bossAttackToken: [
+                /HH3DBossConfig[\s\S]*?["']attackToken["']\s*:\s*["']([a-f0-9]{32})["']/i,
+                /["']attackToken["']\s*:\s*["']([a-f0-9]{32})["']/i,
+                /attackToken\s*[:=]\s*["']([a-f0-9]{32})["']/i,
                 /boss_attack_token\s*=\s*["']([a-f0-9]{32})["']/i,
                 /boss_attack_token\s*=\s*["']([^"']+)["']/i,
             ],
@@ -921,14 +956,28 @@ if (window !== window.top) {
         }
 
         const bossPage = await fetchPage(CONFIG.pages.boss);
-        CONFIG.nonces.boss = extractSecurity(bossPage, patterns.boss);
-        if (!CONFIG.nonces.securityToken && bossPage) {
-            CONFIG.nonces.securityToken = extractSecurity(bossPage, patterns.securityToken);
-            if (CONFIG.nonces.securityToken) CONFIG.nonces.securityToken = decodeURIComponent(CONFIG.nonces.securityToken);
-        }
-
-        // Extract boss_attack_token và bossAttack action từ trang boss
         if (bossPage) {
+            const bossCfg = extractBossConfig(bossPage);
+            if (bossCfg?.nonce) {
+                CONFIG.nonces.boss = bossCfg.nonce;
+                console.log("🛡️ [Boss] Nonce from HH3DBossConfig:", CONFIG.nonces.boss);
+            } else {
+                CONFIG.nonces.boss = extractSecurity(bossPage, patterns.boss);
+            }
+
+            if (bossCfg?.attackToken) {
+                CONFIG.nonces.bossAttackToken = bossCfg.attackToken;
+                console.log("🛡️ [Boss] AttackToken from HH3DBossConfig:", CONFIG.nonces.bossAttackToken);
+            } else {
+                CONFIG.nonces.bossAttackToken = extractSecurity(bossPage, patterns.bossAttackToken);
+            }
+
+            if (!CONFIG.nonces.securityToken) {
+                CONFIG.nonces.securityToken = extractSecurity(bossPage, patterns.securityToken);
+                if (CONFIG.nonces.securityToken) CONFIG.nonces.securityToken = decodeURIComponent(CONFIG.nonces.securityToken);
+            }
+
+            // Extract actions từ trang boss
             const bossDecrypted = decryptHh3dActions(bossPage);
             if (bossDecrypted) {
                 if (bossDecrypted.bossAttack) CONFIG.nonces.bossAttackAction = bossDecrypted.bossAttack;
@@ -944,7 +993,6 @@ if (window !== window.top) {
             if (!CONFIG.nonces.bossTimerAction) {
                 CONFIG.nonces.bossTimerAction = extractSecurity(bossPage, patterns.bossTimer);
             }
-            CONFIG.nonces.bossAttackToken = extractSecurity(bossPage, patterns.bossAttackToken);
         }
 
         // Extract chest actions from chest page if needed
@@ -1258,7 +1306,21 @@ if (window !== window.top) {
             const html = await res.text();
             if (!html) return null;
 
+            const bossCfg = extractBossConfig(html);
+            if (bossCfg?.nonce) {
+                CONFIG.nonces.boss = bossCfg.nonce;
+                console.log(`🛡️ ✓ Cập nhật nonce boss từ HH3DBossConfig: ${bossCfg.nonce}`);
+            }
+            if (bossCfg?.attackToken) {
+                CONFIG.nonces.bossAttackToken = bossCfg.attackToken;
+                console.log(`🛡️ ✓ boss_attack_token OK (HH3DBossConfig)`);
+                return bossCfg.attackToken;
+            }
+
             const tokenPatterns = [
+                /HH3DBossConfig[\s\S]*?["']attackToken["']\s*:\s*["']([a-f0-9]{32})["']/i,
+                /["']attackToken["']\s*:\s*["']([a-f0-9]{32})["']/i,
+                /attackToken\s*[:=]\s*["']([a-f0-9]{32})["']/i,
                 /boss_attack_token\s*=\s*["']([a-f0-9]{32})["']/i,
                 /boss_attack_token\s*=\s*["']([^"']+)["']/i,
             ];
@@ -1266,6 +1328,7 @@ if (window !== window.top) {
                 const m = html.match(p);
                 if (m?.[1]) {
                     console.log(`🛡️ ✓ boss_attack_token OK`);
+                    CONFIG.nonces.bossAttackToken = m[1];
                     return m[1];
                 }
             }
@@ -1285,7 +1348,10 @@ if (window !== window.top) {
         let actionGetBoss = CONFIG.nonces.bossGetAction || "get_boss";
         let actionTimer = CONFIG.nonces.bossTimerAction || "get_next_attack_time";
 
-
+        if (!CONFIG.nonces.boss || !attackToken) {
+            log("🛡️ Đang tải cấu hình Boss từ Hoang Vực...", "info");
+            attackToken = await fetchBossAttackToken();
+        }
 
         while (isRunning && sessionId === currentSessionId) {
             try {
@@ -1302,6 +1368,10 @@ if (window !== window.top) {
                         await markWorkerDone('boss');
                         await sleep(getMsUntilMidnight() + 5000);
                         continue;
+                    }
+                    if (errMsg.toLowerCase().includes("nonce") || errMsg.toLowerCase().includes("token") || errMsg.toLowerCase().includes("bảo mật") || errMsg.toLowerCase().includes("không hợp lệ")) {
+                        log(`🛡️ ⚠️ Lỗi get_boss (${errMsg}), đang tải lại nonce/token từ Hoang Vực...`, "warning");
+                        attackToken = await fetchBossAttackToken();
                     }
                     log(`🛡️ get_boss lỗi: ${errMsg}`, "warning");
                     await sleep(CONFIG.delays.error);
@@ -2468,10 +2538,28 @@ if (window !== window.top) {
                     const inRoom = screenLobby && screenLobby.classList.contains("active") && roomPanel && !roomPanel.classList.contains("hidden");
                     const isLoading = screenLoading && !screenLoading.classList.contains("mc-loaded") && !inBattle && !inLobby && !inRoom;
 
-                    const isHost = typeof Ne === 'function' ? Ne() : false;
+                    // Nhận diện vai trò Chủ phòng (Host) hoặc Thành viên (Member)
+                    let isHost = false;
+                    const btnStart = document.getElementById("btn-start");
+                    if (btnStart) {
+                        const txt = (btnStart.textContent || "").trim().toUpperCase();
+                        if (txt.includes("BẮT ĐẦU") || txt.includes("START")) {
+                            isHost = true;
+                        } else if (txt.includes("SẴN SÀNG") || txt.includes("HỦY") || txt.includes("READY")) {
+                            isHost = false;
+                        }
+                    }
+                    if (!isHost && typeof Ne === 'function') {
+                        try { isHost = Ne(); } catch (e) {}
+                    }
+                    if (!isHost && arg && arg.role === 'host' && inRoom) {
+                        if (btnStart && !btnStart.textContent.includes("SẴN SÀNG")) {
+                            isHost = true;
+                        }
+                    }
 
                     return { isLoading, inBattle, inRoom, inLobby, isHost };
-                `);
+                `, { role: CONFIG.mecungConfig.role });
 
                 if (!screenState) {
                     log("⚠️ Không thể kết nối với trang game Mê Cung. Đang thử lại...", "warning");
@@ -2497,22 +2585,71 @@ if (window !== window.top) {
                     continue;
                 }
 
-                // 3. Kiểm tra giới hạn Huyền Tinh ngày (Chỉ kiểm tra khi game đã load xong)
+                // 3. Kiểm tra giới hạn Tinh Thạch ngày (Chỉ kiểm tra khi game đã load xong)
                 const stats = await runInPage(`
+                    const extractNum = (text) => {
+                        if (!text) return null;
+                        const match = text.match(/\\d+/);
+                        return match ? parseInt(match[0], 10) : null;
+                    };
+
                     const usedEl = document.getElementById("mc-ht-daily-used");
                     const capEl = document.getElementById("mc-ht-daily-cap");
-                    const used = usedEl ? parseInt(usedEl.textContent.trim()) : (typeof WP !== 'undefined' ? WP.htDailyUsed : null);
-                    const cap = capEl ? parseInt(capEl.textContent.trim()) : (typeof WP !== 'undefined' ? WP.htDailyCap : null);
+
+                    let used = usedEl ? extractNum(usedEl.textContent) : null;
+                    let cap = capEl ? extractNum(capEl.textContent) : null;
+
+                    // Fallback nếu không có ID riêng biệt
+                    if (used === null || cap === null) {
+                        const dailyEl = document.getElementById("mc-ht-daily") || 
+                                        document.querySelector(".mc-ht-daily") || 
+                                        document.querySelector('[id*="ht-daily"]') ||
+                                        document.querySelector('[id*="tinh-thach"]') ||
+                                        document.querySelector('[class*="ht-daily"]');
+                        if (dailyEl) {
+                            const m = (dailyEl.textContent || "").match(/(\\d+)\\s*[/:]\\s*(\\d+)/);
+                            if (m) {
+                                if (used === null) used = parseInt(m[1], 10);
+                                if (cap === null) cap = parseInt(m[2], 10);
+                            }
+                        }
+                    }
+
+                    // Fallback từ WP object trong game
+                    if (typeof WP !== 'undefined') {
+                        if (used === null && typeof WP.htDailyUsed !== 'undefined') used = parseInt(WP.htDailyUsed, 10);
+                        if (cap === null && typeof WP.htDailyCap !== 'undefined') cap = parseInt(WP.htDailyCap, 10);
+                    }
+
                     return { used, cap };
                 `);
 
+                const customCap = CONFIG.mecungConfig.maxCap;
+                const effectiveCap = customCap || (stats && stats.cap);
+
                 if (stats && stats.used !== null) {
-                    const cap = stats.cap || 200;
-                    if (stats.used >= cap || stats.used >= 200) {
-                        log(`⚔️ Đã đạt giới hạn Huyền Tinh trong ngày (${stats.used}/${cap}). Dừng worker Mê Cung.`, "success");
+                    if (effectiveCap && stats.used >= effectiveCap) {
+                        log(`⚔️ Đã đạt giới hạn Tinh Thạch trong ngày (${stats.used}/${effectiveCap}). Dừng worker Mê Cung.`, "success");
                         await markWorkerDone('meCung');
                         break;
                     }
+                }
+
+                // Kiểm tra thông báo hết lượt / đạt giới hạn Tinh Thạch từ popup thông báo trong game
+                const limitNotification = await runInPage(`
+                    const overlay = document.getElementById("confirm-overlay") || document.querySelector(".modal-alert, .modal-notify, .confirm-modal");
+                    if (overlay && !overlay.classList.contains("hidden")) {
+                        const txt = (overlay.textContent || "").toLowerCase();
+                        if ((txt.includes("đạt giới hạn") || txt.includes("hết lượt") || txt.includes("tối đa")) && (txt.includes("tinh thạch") || txt.includes("huyền tinh"))) {
+                            return true;
+                        }
+                    }
+                    return false;
+                `);
+                if (limitNotification) {
+                    log("⚔️ Đã đạt giới hạn Tinh Thạch hôm nay (theo thông báo game). Dừng worker Mê Cung.", "success");
+                    await markWorkerDone('meCung');
+                    break;
                 }
 
                 // 4. Tự động tắt hộp thoại xác nhận khi có popups thông báo lỗi
@@ -2588,31 +2725,119 @@ if (window !== window.top) {
                         }
                     `);
 
-                    // Nếu là Chủ phòng (Host): Kiểm tra số lượng người và trạng thái để Bắt đầu
-                    if (screenState.isHost) {
-                        const minPlayers = CONFIG.mecungConfig.minPlayers || 5;
-                        const actionResult = await runInPage(`
-                            const filledCards = document.querySelectorAll(".player-card.filled").length;
-                            const btnStart = document.getElementById("btn-start");
-                            
-                            if (btnStart && filledCards >= arg && btnStart.classList.contains("ready-glow") && !btnStart.classList.contains("blocked-start")) {
-                                btnStart.click();
-                                return { clicked: true, count: filledCards };
-                            }
-                            return { clicked: false, count: filledCards };
-                        `, minPlayers);
+                    const minPlayers = CONFIG.mecungConfig.minPlayers || 5;
 
-                        if (actionResult && actionResult.clicked) {
-                            log(`⚔️ Đội hình đủ điều kiện (Số người: ${actionResult.count}/${minPlayers}). Bắt đầu trận chiến!`, "success");
+                    // Xử lý hành động trong phòng (Host hoặc Member)
+                    const roomAction = await runInPage(`
+                        const minPlayers = arg.minPlayers || 5;
+                        const configRole = arg.role || 'member';
+
+                        const btnStart = document.getElementById("btn-start");
+                        const btnText = (btnStart ? btnStart.textContent : "").trim().toUpperCase();
+
+                        // Xác định vai trò: nút "BẮT ĐẦU" chỉ có ở Chủ phòng, nút "SẴN SÀNG" ở Thành viên
+                        let isHost = btnText.includes("BẮT ĐẦU") || btnText.includes("START");
+                        if (!isHost && typeof Ne === 'function') {
+                            try { isHost = Ne(); } catch (e) {}
                         }
-                    } else {
-                        // Thành viên (Member): Bấm Sẵn Sàng (nút dự phòng nếu auto-ready lỗi)
-                        await runInPage(`
-                            const btnStart = document.getElementById("btn-start");
+                        if (!isHost && configRole === 'host' && !btnText.includes("SẴN SÀNG")) {
+                            isHost = true;
+                        }
+
+                        // Đếm số lượng người trong phòng chính xác
+                        const cards = document.querySelectorAll(".player-card, .room-player-card, [class*='player-card']");
+                        let filledCount = 0;
+                        if (cards.length > 0) {
+                            cards.forEach((card, idx) => {
+                                const isFilled = card.classList.contains("filled") || card.classList.contains("is-filled") || card.classList.contains("occupied");
+                                const isEmpty = card.classList.contains("empty") || card.classList.contains("slot-empty") || card.classList.contains("vacant");
+                                const hasName = !!card.querySelector(".player-name, .mc-player-name, .name, [data-user-id]");
+                                const hasAvatar = !!card.querySelector("img, .avatar:not(.empty-avatar)");
+                                const text = (card.textContent || "").trim().toLowerCase();
+                                const textEmpty = text === "" || text.includes("trống") || text === "+" || text.includes("chờ người") || text.includes("mời");
+
+                                if (isFilled) {
+                                    filledCount++;
+                                } else if (!isEmpty && (hasName || hasAvatar || (!textEmpty && text.length > 0))) {
+                                    filledCount++;
+                                } else if (idx === 0 && !isEmpty) {
+                                    // Thẻ vị trí số 1 luôn là chủ phòng
+                                    filledCount++;
+                                }
+                            });
+                        }
+                        if (filledCount === 0) {
+                            filledCount = document.querySelectorAll(".player-card.filled").length;
+                            if (filledCount === 0) filledCount = 1;
+                        }
+
+                        if (isHost) {
+                            // CHỦ PHÒNG (HOST)
+                            // Kiểm tra xem nút bắt đầu có bị khóa không (do có thành viên chưa sẵn sàng)
+                            const isBlocked = btnStart && (
+                                btnStart.classList.contains("blocked-start") || 
+                                btnStart.disabled || 
+                                btnStart.classList.contains("disabled")
+                            );
+
+                            // Điều kiện bắt đầu:
+                            // 1. Số người trong phòng >= số người tối thiểu đã chọn (minPlayers)
+                            // 2. Nút bắt đầu không bị khóa (tất cả thành viên đã sẵn sàng)
+                            if (btnStart && filledCount >= minPlayers && !isBlocked) {
+                                btnStart.click();
+                                // Tự động xác nhận nếu game hiện popup hỏi khi bắt đầu phòng chưa đủ 5 người
+                                setTimeout(() => {
+                                    const confirmBtn = document.querySelector("#confirm-overlay .confirm-btn-ok, .modal-confirm .btn-ok, #confirm-overlay .btn-confirm");
+                                    if (confirmBtn) confirmBtn.click();
+                                }, 500);
+
+                                return { 
+                                    isHost: true, 
+                                    action: 'started', 
+                                    count: filledCount, 
+                                    minPlayers: minPlayers 
+                                };
+                            }
+
+                            return { 
+                                isHost: true, 
+                                action: 'waiting', 
+                                count: filledCount, 
+                                minPlayers: minPlayers, 
+                                isBlocked: isBlocked 
+                            };
+                        } else {
+                            // THÀNH VIÊN (MEMBER)
+                            let readied = false;
                             if (btnStart && btnStart.textContent.includes("SẴN SÀNG") && !btnStart.textContent.includes("HỦY")) {
                                 btnStart.click();
+                                readied = true;
                             }
-                        `);
+                            return { 
+                                isHost: false, 
+                                action: readied ? 'readied' : 'waiting_host', 
+                                count: filledCount, 
+                                minPlayers: minPlayers 
+                            };
+                        }
+                    `, { minPlayers: minPlayers, role: CONFIG.mecungConfig.role });
+
+                    if (roomAction) {
+                        if (roomAction.isHost) {
+                            if (roomAction.action === 'started') {
+                                log(`⚔️ [Chủ phòng] Đội hình đủ điều kiện (${roomAction.count}/${roomAction.minPlayers} người). Bắt đầu trận chiến!`, "success");
+                            } else if (roomAction.action === 'waiting') {
+                                if (roomAction.count < roomAction.minPlayers) {
+                                    log(`⚔️ [Chủ phòng] Phòng hiện có ${roomAction.count}/${roomAction.minPlayers} người. Đang đợi đủ số người đã chọn...`, "info");
+                                } else if (roomAction.isBlocked) {
+                                    log(`⚔️ [Chủ phòng] Đã đủ ${roomAction.count}/${roomAction.minPlayers} người. Đang đợi tất cả thành viên bấm SẴN SÀNG...`, "info");
+                                }
+                            }
+                        } else {
+                            if (roomAction.action === 'readied') {
+                                log(`⚔️ [Thành viên] Đã bấm SẴN SÀNG. Đang đợi chủ phòng bắt đầu trận chiến...`, "info");
+                            }
+                        }
                     }
 
                     await sleep(3000);
@@ -2758,8 +2983,9 @@ if (window !== window.top) {
                     }
 
                     if (message.mecungConfig) {
-                        CONFIG.mecungConfig.minPlayers = message.mecungConfig.minPlayers || 5;
+                        CONFIG.mecungConfig.minPlayers = parseInt(message.mecungConfig.minPlayers, 10) || 5;
                         CONFIG.mecungConfig.role = message.mecungConfig.role || "member";
+                        CONFIG.mecungConfig.maxCap = message.mecungConfig.maxCap ? parseInt(message.mecungConfig.maxCap, 10) : null;
                     }
 
                     if (message.luyenDanConfig) {

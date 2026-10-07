@@ -254,6 +254,16 @@ if (window !== window.top) {
         return null;
     }
 
+    // Helper kiểm tra route quay số hợp lệ (loại bỏ đường dẫn file asset/audio/nhạc mp3)
+    function isValidSpinRoute(route) {
+        if (!route || typeof route !== 'string') return false;
+        const trimmed = route.trim();
+        if (trimmed.length === 0) return false;
+        if (/\.(mp3|wav|ogg|m4a|png|jpg|jpeg|gif|webp|svg|css|js|json)$/i.test(trimmed)) return false;
+        if (trimmed.includes("wp-content") || trimmed.includes("assets") || trimmed.includes("/") || trimmed.includes("\\")) return false;
+        return /^[a-zA-Z0-9_-]+$/.test(trimmed);
+    }
+
     // Helper to execute code in the page context via inject.js
     function runInPage(codeStr, argVal) {
         return new Promise((resolve, reject) => {
@@ -838,10 +848,10 @@ if (window !== window.top) {
                 /"userId"\s*:\s*(\d+)/i
             ],
             lotterySpin: [
-                /["']lotterySpin["']\s*:\s*["']([^"']+)["']/i,
-                /lotterySpin\s*:\s*["']([^"']+)["']/i,
-                /hh3dData\.act\.lotterySpin\s*=\s*["']([^"']+)["']/i,
-                /["'](?:luckySpin|quaySo|vongQuay|quay|lottery|spin)["']\s*:\s*["']([^"']+)["']/i,
+                /["']lotterySpin["']\s*:\s*["']([a-zA-Z0-9_-]+)["']/i,
+                /lotterySpin\s*:\s*["']([a-zA-Z0-9_-]+)["']/i,
+                /hh3dData\.act\.lotterySpin\s*=\s*["']([a-zA-Z0-9_-]+)["']/i,
+                /["'](?:luckySpin|quaySo|vongQuay|quay|lottery|spin)["']\s*:\s*["']([a-zA-Z0-9_-]+)["']/i,
             ],
             chest: [
                 /open_chest_pl[^}]*security["\s:]+["']([a-f0-9]{10})["']/i,
@@ -915,7 +925,7 @@ if (window !== window.top) {
             if (homeDecrypted) {
                 console.log("🐉 [Home Decrypted Actions]:", Object.keys(homeDecrypted));
                 const spinAction = homeDecrypted.lotterySpin || homeDecrypted.spin || homeDecrypted.luckySpin || homeDecrypted.quay || homeDecrypted.quaySo || homeDecrypted.lottery || homeDecrypted.vongQuay;
-                if (spinAction) CONFIG.nonces.lotterySpin = spinAction;
+                if (isValidSpinRoute(spinAction)) CONFIG.nonces.lotterySpin = spinAction;
                 if (homeDecrypted.bossAttack) CONFIG.nonces.bossAttackAction = homeDecrypted.bossAttack;
                 if (homeDecrypted.bossGet) CONFIG.nonces.bossGetAction = homeDecrypted.bossGet;
                 if (homeDecrypted.bossTimer) CONFIG.nonces.bossTimerAction = homeDecrypted.bossTimer;
@@ -923,8 +933,9 @@ if (window !== window.top) {
                 if (homeDecrypted.tltmAttack) CONFIG.nonces.tltmAttackAction = homeDecrypted.tltmAttack;
                 if (homeDecrypted.hdnReward) CONFIG.nonces.dailyRewardAction = homeDecrypted.hdnReward;
             }
-            if (!CONFIG.nonces.lotterySpin) {
-                CONFIG.nonces.lotterySpin = extractSecurity(home, patterns.lotterySpin);
+            if (!isValidSpinRoute(CONFIG.nonces.lotterySpin)) {
+                const extracted = extractSecurity(home, patterns.lotterySpin);
+                if (isValidSpinRoute(extracted)) CONFIG.nonces.lotterySpin = extracted;
             }
         }
 
@@ -936,21 +947,31 @@ if (window !== window.top) {
                 if (spinDecrypted) {
                     console.log("🐉 [Spin Decrypted Actions]:", Object.keys(spinDecrypted));
                 }
-                if (spinAction) {
+                if (isValidSpinRoute(spinAction)) {
                     CONFIG.nonces.lotterySpin = spinAction;
                     await chrome.storage.local.set({ lastKnownSpinRoute: spinAction });
                 } else {
-                    CONFIG.nonces.lotterySpin = extractSecurity(spinPage, patterns.lotterySpin) || CONFIG.nonces.lotterySpin || "spin";
+                    const extracted = extractSecurity(spinPage, patterns.lotterySpin);
+                    if (isValidSpinRoute(extracted)) {
+                        CONFIG.nonces.lotterySpin = extracted;
+                    }
                 }
-            } else if (!CONFIG.nonces.lotterySpin) {
+            }
+
+            if (!isValidSpinRoute(CONFIG.nonces.lotterySpin)) {
                 CONFIG.nonces.lotterySpin = "spin";
             }
 
             if (CONFIG.nonces.lotterySpin === "spin") {
                 const saved = await chrome.storage.local.get(['lastKnownSpinRoute']);
                 if (saved.lastKnownSpinRoute) {
-                    CONFIG.nonces.lotterySpin = saved.lastKnownSpinRoute;
-                    console.log("🎡 [Startup] Using last known spin route from storage:", CONFIG.nonces.lotterySpin);
+                    if (isValidSpinRoute(saved.lastKnownSpinRoute)) {
+                        CONFIG.nonces.lotterySpin = saved.lastKnownSpinRoute;
+                        console.log("🎡 [Startup] Using last known spin route from storage:", CONFIG.nonces.lotterySpin);
+                    } else {
+                        console.warn("🎡 [Startup] Removing invalid stored spin route:", saved.lastKnownSpinRoute);
+                        await chrome.storage.local.remove(['lastKnownSpinRoute']);
+                    }
                 }
             }
         }
@@ -1522,14 +1543,27 @@ if (window !== window.top) {
             try {
                 // Inject script để đọc hh3dData từ MAIN world
                 const pageData = await injectAndReadHh3dData();
-                let spinRoute = pageData.lotterySpin || CONFIG.nonces.lotterySpin || "spin";
+                let spinRoute = null;
 
-                if (spinRoute === "spin") {
+                if (pageData && isValidSpinRoute(pageData.lotterySpin)) {
+                    spinRoute = pageData.lotterySpin;
+                } else if (isValidSpinRoute(CONFIG.nonces.lotterySpin)) {
+                    spinRoute = CONFIG.nonces.lotterySpin;
+                } else {
                     const saved = await chrome.storage.local.get(['lastKnownSpinRoute']);
-                    if (saved.lastKnownSpinRoute) {
+                    if (saved.lastKnownSpinRoute && isValidSpinRoute(saved.lastKnownSpinRoute)) {
                         spinRoute = saved.lastKnownSpinRoute;
                         console.log("🎡 [Spin] Using last known spin route from storage:", spinRoute);
+                    } else {
+                        if (saved.lastKnownSpinRoute && !isValidSpinRoute(saved.lastKnownSpinRoute)) {
+                            await chrome.storage.local.remove(['lastKnownSpinRoute']);
+                        }
+                        spinRoute = "spin";
                     }
+                }
+
+                if (!isValidSpinRoute(spinRoute)) {
+                    spinRoute = "spin";
                 }
 
                 const spinUrl = CONFIG.endpoints.spin + spinRoute;
@@ -1574,7 +1608,13 @@ if (window !== window.top) {
                         log("🎡 ⚠️ Không đủ Tu Vi để quay - Dừng worker", "warning");
                         return;
                     } else if (msg.includes("Không tìm thấy đường dẫn") || msg.includes("rest_no_route")) {
-                        log(`🎡 ⚠️ Route quay số không hợp lệ hoặc đã đổi: ${spinRoute}`, "warning");
+                        log(`🎡 ⚠️ Route quay số không hợp lệ (${spinRoute}). Đang xóa cache và thử lại với route mặc định 'spin'...`, "warning");
+                        await chrome.storage.local.remove(['lastKnownSpinRoute']);
+                        CONFIG.nonces.lotterySpin = "spin";
+                        if (spinRoute !== "spin") {
+                            await sleep(2000);
+                            continue;
+                        }
                         await sleep(CONFIG.delays.error);
                     } else {
                         log(`🎡 ${msg || JSON.stringify(result)}`, "warning");
@@ -3125,7 +3165,7 @@ if (window !== window.top) {
             try {
                 const pageData = await injectAndReadHh3dData();
                 const route = pageData.lotterySpin;
-                if (route && route !== "spin") {
+                if (route && route !== "spin" && isValidSpinRoute(route)) {
                     await chrome.storage.local.set({ lastKnownSpinRoute: route });
                     console.log("🎡 [Auto-Save] Saved last known spin route:", route);
                 }

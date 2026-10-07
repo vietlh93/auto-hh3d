@@ -7,7 +7,10 @@
             data.restNonce = hh3dData.restNonce || null;
             data.userId = hh3dData.userId || null;
             if (hh3dData.act) {
-                data.lotterySpin = hh3dData.act.lotterySpin || hh3dData.act.spin || hh3dData.act.luckySpin || hh3dData.act.quay || hh3dData.act.quaySo || hh3dData.act.lottery || hh3dData.act.vongQuay || null;
+                var spinCand = hh3dData.act.lotterySpin || hh3dData.act.spin || hh3dData.act.luckySpin || hh3dData.act.quay || hh3dData.act.quaySo || hh3dData.act.lottery || hh3dData.act.vongQuay || null;
+                if (spinCand && typeof spinCand === 'string' && !spinCand.includes('/') && !spinCand.includes('\\') && !spinCand.includes('.')) {
+                    data.lotterySpin = spinCand;
+                }
             }
         }
         if (typeof HH3DBossConfig !== 'undefined') {

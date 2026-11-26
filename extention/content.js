@@ -40,16 +40,30 @@ if (window !== window.top) {
             bossAttackAction: null,
             bossGetAction: null,
             bossTimerAction: null,
+            bossCheckElemAction: null,
+            bossChangeElemAction: null,
             chestTimerAction: null,
             chestOpenAction: null,
+            chestClaimAction: null,
             tltmTimerAction: null,
+            tltmOpenAction: null,
             tltmAttackAction: null,
+            vdLoadAction: null,
+            vdSaveAction: null,
             dailyRewardAction: null,
             securityTokenMiner: null,
             mining: null,
             enterMine: null,
             claimMine: null,
-            getUsersMine: null
+            getUsersMine: null,
+            kmListAct: null,
+            kmEnterAct: null,
+            kmClaimAct: null,
+            kmUsersAct: null,
+            kmRewardAct: null,
+            kmCheckAct: null,
+            kmRewardNonce: null,
+            kmCheckNonce: null
         },
         miningConfig: {
             mineId: null,
@@ -73,7 +87,6 @@ if (window !== window.top) {
     let isRunning = false;
     const tabInstanceId = Math.random().toString(16).slice(2);
     let currentSessionId = 0; // New: Unique ID for each start session
-    let workers = [];
     let activeWorkerNames = []; // Store worker names for resume
     let savedMiningConfig = null; // Store mining config for resume
     let savedMecungConfig = null; // Store Mê Cung config for resume
@@ -83,9 +96,34 @@ if (window !== window.top) {
     let nextRequestTime = Date.now();
     let isResuming = false; // Flag to prevent double resume
     let forceSpinCheck = false; // Flag to interrupt spin sleep when milestone 2 is claimed
+    let sessionAbortController = null;
+    let spinWakeController = null;
+    let bossElementState = {
+        bossId: null,
+        bossElement: null,
+        userElement: null,
+        freeChange: false,
+        checkedBossId: null
+    };
 
     // ============= UTILITIES =============
-    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    const sleep = (ms, signal = sessionAbortController?.signal) => {
+        if (signal?.aborted) return Promise.resolve();
+        return new Promise((resolve) => {
+            let onAbort = null;
+            const timer = setTimeout(() => {
+                if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+                resolve();
+            }, ms);
+            if (signal) {
+                onAbort = () => {
+                    clearTimeout(timer);
+                    resolve();
+                };
+                signal.addEventListener('abort', onAbort, { once: true });
+            }
+        });
+    };
     const getMsUntilMidnight = () => {
         const now = new Date();
         const midnight = new Date(now);
@@ -225,26 +263,73 @@ if (window !== window.top) {
         }
     }
 
-    // Helper trích xuất window.HH3DBossConfig từ HTML của trang /hoang-vuc
+    // Helper trích xuất object JSON gán cho biến (ví dụ window.HV2 = {...};) an toàn với dấu ';' bên trong chuỗi
+    function extractAssignedJsonObject(html, varNames) {
+        if (!html || !Array.isArray(varNames)) return null;
+        for (const varName of varNames) {
+            const assignRegex = new RegExp(`(?:window\\.)?${varName}\\s*=\\s*\\{`);
+            const match = assignRegex.exec(html);
+            if (!match) continue;
+
+            const startIdx = match.index + match[0].length - 1;
+            let depth = 0;
+            let inString = false;
+            let escaped = false;
+
+            for (let i = startIdx; i < html.length; i++) {
+                const ch = html[i];
+                if (inString) {
+                    if (escaped) {
+                        escaped = false;
+                    } else if (ch === '\\') {
+                        escaped = true;
+                    } else if (ch === '"') {
+                        inString = false;
+                    }
+                    continue;
+                }
+                if (ch === '"') {
+                    inString = true;
+                } else if (ch === '{') {
+                    depth++;
+                } else if (ch === '}') {
+                    depth--;
+                    if (depth === 0) {
+                        try {
+                            return JSON.parse(html.slice(startIdx, i + 1));
+                        } catch (e) {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    // Helper trích xuất window.HV2 (hoặc window.HH3DBossConfig cũ) từ HTML của trang /hoang-vuc
     function extractBossConfig(html) {
         if (!html) return null;
-        try {
-            const match = html.match(/(?:window\.)?HH3DBossConfig\s*=\s*({[\s\S]*?});/);
-            if (match && match[1]) {
-                const cfg = JSON.parse(match[1]);
-                return {
-                    nonce: cfg.nonce || null,
-                    attackToken: cfg.attackToken || null,
-                    maintenanceRemaining: cfg.maintenanceRemaining ?? null,
-                    useAttackWorker: cfg.useAttackWorker ?? null
-                };
-            }
-        } catch (e) { }
+        const cfg = extractAssignedJsonObject(html, ['HV2', 'HH3DBossConfig']);
+        if (cfg) {
+            return {
+                nonce: cfg.nonce || null,
+                attackToken: cfg.attackToken || null,
+                boss: cfg.boss || null,
+                user: cfg.user || null,
+                nextAttackMs: cfg.nextAttackMs ?? null,
+                serverMs: cfg.serverMs ?? null,
+                pending: cfg.pending ?? false,
+                sealed: cfg.sealed ?? false,
+                maintenanceRemaining: cfg.maintenanceRemaining ?? null,
+                useAttackWorker: cfg.useWorker ?? cfg.useAttackWorker ?? null
+            };
+        }
 
         // Fallback regex nếu JSON.parse không bắt được
-        const nonceMatch = html.match(/HH3DBossConfig[\s\S]*?["']?nonce["']?\s*:\s*["']([a-f0-9]{10})["']/i);
-        const tokenMatch = html.match(/HH3DBossConfig[\s\S]*?["']?attackToken["']?\s*:\s*["']([a-f0-9]{32})["']/i)
-            || html.match(/["']?attackToken["']?\s*:\s*["']([a-f0-9]{32})["']/i);
+        const nonceMatch = html.match(/(?:HV2|HH3DBossConfig)[\s\S]*?["']?nonce["']?\s*:\s*["']([a-f0-9]{8,})["']/i);
+        const tokenMatch = html.match(/(?:HV2|HH3DBossConfig)[\s\S]*?["']?attackToken["']?\s*:\s*["']([a-f0-9]{16,})["']/i)
+            || html.match(/["']?attackToken["']?\s*:\s*["']([a-f0-9]{16,})["']/i);
         if (nonceMatch || tokenMatch) {
             return {
                 nonce: nonceMatch ? nonceMatch[1] : null,
@@ -264,59 +349,51 @@ if (window !== window.top) {
         return /^[a-zA-Z0-9_-]+$/.test(trimmed);
     }
 
-    // Helper to execute code in the page context via inject.js
-    function runInPage(codeStr, argVal) {
-        return new Promise((resolve, reject) => {
-            const id = `eval_${Math.random().toString(16).slice(2)}_${Date.now()}`;
+    function wakeSpinWorker() {
+        forceSpinCheck = true;
+        if (spinWakeController && !spinWakeController.signal.aborted) {
+            spinWakeController.abort();
+        }
+    }
+
+    // Giao tiếp với inject.js trong MAIN world qua allowlist command cố định
+    function callPageBridge(cmd, arg = null, timeoutMs = 4000) {
+        return new Promise((resolve) => {
+            const id = `cmd_${Math.random().toString(16).slice(2)}_${Date.now()}`;
+            let settled = false;
+            const cleanup = () => {
+                window.removeEventListener('message', handler);
+                clearTimeout(timer);
+            };
             const handler = (e) => {
-                if (e.data && e.data.type === '__hh3d_eval_res__' && e.data.id === id) {
-                    window.removeEventListener('message', handler);
+                if (e.source !== window || e.origin !== window.location.origin) return;
+                if (e.data && e.data.type === '__hh3d_cmd_res__' && e.data.id === id) {
+                    if (settled) return;
+                    settled = true;
+                    cleanup();
                     if (e.data.success) {
-                        resolve(e.data.payload);
+                        resolve(e.data.payload ?? null);
                     } else {
-                        reject(new Error(e.data.error));
+                        resolve(null);
                     }
                 }
             };
-            window.addEventListener('message', handler);
-            window.postMessage({ type: '__hh3d_eval__', id: id, code: codeStr, arg: argVal }, '*');
-            
-            // Timeout fallback
-            setTimeout(() => {
-                window.removeEventListener('message', handler);
+            const timer = setTimeout(() => {
+                if (settled) return;
+                settled = true;
+                cleanup();
                 resolve(null);
-            }, 6000);
+            }, timeoutMs);
+
+            window.addEventListener('message', handler);
+            window.postMessage({ type: '__hh3d_cmd__', id: id, cmd: cmd, arg: arg }, window.location.origin);
         });
     }
 
-    // ============= INJECT SCRIPT ĐỌC hh3dData TỪ MAIN WORLD =============
-    function injectAndReadHh3dData() {
-        return new Promise((resolve) => {
-            // Lắng nghe postMessage từ inject.js
-            const handler = (e) => {
-                if (e.data && e.data.type === '__hh3d_bridge__') {
-                    window.removeEventListener('message', handler);
-                    resolve(e.data.payload || {});
-                }
-            };
-            window.addEventListener('message', handler);
-
-            // Load inject.js từ extension URL (bypass CSP)
-            const script = document.createElement('script');
-            script.src = chrome.runtime.getURL('inject.js');
-            script.onload = () => script.remove();
-            script.onerror = () => {
-                window.removeEventListener('message', handler);
-                resolve({});
-            };
-            document.documentElement.appendChild(script);
-
-            // Timeout fallback
-            setTimeout(() => {
-                window.removeEventListener('message', handler);
-                resolve({});
-            }, 3000);
-        });
+    // ============= ĐỌC hh3dData TỪ MAIN WORLD QUA BRIDGE =============
+    async function injectAndReadHh3dData() {
+        const data = await callPageBridge('readHh3dData', null, 3000);
+        return data || {};
     }
 
     // Kiểm tra extension context còn hợp lệ
@@ -443,7 +520,8 @@ if (window !== window.top) {
                         luyenDanConfig = {
                             targetTier: result.popupState.luyenDanConfig.targetTier || 'auto',
                             autoDecompose: !!result.popupState.luyenDanConfig.autoDecompose,
-                            decomposeTier: result.popupState.luyenDanConfig.decomposeTier || 'ha'
+                            decomposeTier: result.popupState.luyenDanConfig.decomposeTier || 'ha',
+                            decomposeStars: result.popupState.luyenDanConfig.decomposeStars || '1-2'
                         };
                     }
 
@@ -493,6 +571,13 @@ if (window !== window.top) {
         log('🔄 Đang tự động resume workers...', 'info');
 
         try {
+            if (sessionAbortController) sessionAbortController.abort();
+            if (spinWakeController && !spinWakeController.signal.aborted) {
+                spinWakeController.abort();
+                spinWakeController = null;
+            }
+            clearPendingQueue();
+            sessionAbortController = new AbortController();
             currentSessionId++; // Increment session ID to "kill" any existing workers
             const mySessionId = currentSessionId;
             isRunning = true;
@@ -521,18 +606,28 @@ if (window !== window.top) {
 
             // Fetch fresh nonces
             const activeWorkers = [];
+            let skippedBossTongMonDone = false;
+            let skippedChestDone = false;
             for (const name of config.workers) {
                 // Vòng quay (spin) có thể nhận thêm lượt trong ngày (từ Mốc 2), nên không bỏ qua khi startup
                 if (name !== 'spin' && await isWorkerDone(name)) {
                     const vnNames = { chest: 'Rương', boss: 'Boss HV', bossTongMon: 'Boss TM', spin: 'Quay', tltm: 'TLTM', vanDap: 'Vấn Đáp', teLe: 'Tế Lễ', dailyReward: 'Daily', mining: 'Đào Mỏ', luyenDan: 'Luyện Đan', meCung: 'Mê Cung' };
                     log(`ℹ️ ${vnNames[name] || name} đã xong hôm nay. Bỏ qua.`, 'success');
+                    if (name === 'bossTongMon') skippedBossTongMonDone = true;
+                    if (name === 'chest') skippedChestDone = true;
                     continue;
                 }
                 activeWorkers.push(name);
             }
 
             await fetchNonces(activeWorkers);
-            await dailyCheckIn();
+            await dailyCheckIn(mySessionId);
+            if (skippedBossTongMonDone) {
+                await checkAndClaimBossTongMonReward().catch(() => { });
+            }
+            if (skippedChestDone) {
+                await checkAndClaimPhucLoiMilestones().catch(() => { });
+            }
 
             const workerMap = {
                 chest: runChestWorker,
@@ -567,6 +662,7 @@ if (window !== window.top) {
             activeWorkerNames = config.workers;
             savedMiningConfig = config.miningConfig;
             savedMecungConfig = config.mecungConfig;
+            savedLuyenDanConfig = config.luyenDanConfig;
 
             // Start heartbeat
             startHeartbeat();
@@ -641,6 +737,28 @@ if (window !== window.top) {
         }
     });
 
+    // Global multi-tab lock: dừng toàn bộ workers ngay khi tab khác chiếm activeTabInstanceId
+    if (typeof chrome !== 'undefined' && chrome.storage?.onChanged) {
+        chrome.storage.onChanged.addListener((changes, areaName) => {
+            if (areaName !== 'local' || !changes.activeTabInstanceId) return;
+            const nextOwner = changes.activeTabInstanceId.newValue;
+            if (isRunning && nextOwner && nextOwner !== tabInstanceId) {
+                log("⚠️ Phát hiện tab khác đang chạy workers. Dừng workers ở tab này.", "warning");
+                isRunning = false;
+                if (sessionAbortController) {
+                    sessionAbortController.abort();
+                    sessionAbortController = null;
+                }
+                if (spinWakeController && !spinWakeController.signal.aborted) {
+                    spinWakeController.abort();
+                    spinWakeController = null;
+                }
+                clearPendingQueue();
+                stopHeartbeat();
+            }
+        });
+    }
+
     // Detect manual claim of Milestone 2 (Vòng Quay)
     document.addEventListener("click", (e) => {
         const target = e.target;
@@ -649,8 +767,8 @@ if (window !== window.top) {
             setTimeout(() => {
                 const rc2 = document.getElementById("rc2");
                 if (rc2 && rc2.classList.contains("claimed")) {
-                    forceSpinCheck = true;
                     clearWorkerDone('spin');
+                    wakeSpinWorker();
                     log("🎡 Đã nhận thành công Mốc 2 thủ công. Kích hoạt lượt quay mới!", "success");
                 }
             }, 3000);
@@ -658,20 +776,65 @@ if (window !== window.top) {
     });
 
     // ============= HTTP CLIENT (QUEUE-BASED) =============
-    // Mutex để đảm bảo chỉ 1 request tại 1 thời điểm
-    let requestQueue = Promise.resolve();
+    // Priority queue để đảm bảo tuần tự nhưng vẫn ưu tiên tác vụ khẩn cấp (vd: điều hỏa Luyện Đan)
+    const pendingQueue = [];
+    let queueRunning = false;
+    const REQUEST_TIMEOUT_MS = 30000;
 
-    function enforceDelay() {
-        // Tạo 1 promise mới chain vào queue, đảm bảo tuần tự
-        return new Promise((resolve) => {
-            requestQueue = requestQueue.then(async () => {
+    function clearPendingQueue(onlyAborted = false) {
+        if (onlyAborted) {
+            for (let i = pendingQueue.length - 1; i >= 0; i--) {
+                if (pendingQueue[i].signal?.aborted) {
+                    const [removed] = pendingQueue.splice(i, 1);
+                    removed.resolve(false);
+                }
+            }
+            return;
+        }
+        while (pendingQueue.length > 0) {
+            const task = pendingQueue.shift();
+            task.resolve(false);
+        }
+    }
+
+    async function drainRequestQueue() {
+        if (queueRunning) return;
+        queueRunning = true;
+        try {
+            while (pendingQueue.length > 0) {
+                const task = pendingQueue.shift();
+                if (task.signal?.aborted) {
+                    task.resolve(false);
+                    continue;
+                }
                 const now = Date.now();
                 if (now < nextRequestTime) {
-                    await sleep(nextRequestTime - now);
+                    await sleep(nextRequestTime - now, task.signal || null);
+                }
+                if (task.signal?.aborted) {
+                    task.resolve(false);
+                    continue;
                 }
                 nextRequestTime = Date.now() + CONFIG.delays.minRequestGap;
-                resolve();
-            });
+                task.resolve(true);
+            }
+        } finally {
+            queueRunning = false;
+        }
+    }
+
+    function enforceDelay(priority = 'normal', signal = null) {
+        if (signal?.aborted) return Promise.resolve(false);
+        return new Promise((resolve) => {
+            const item = { priority, signal, resolve };
+            if (priority === 'high') {
+                const insertIdx = pendingQueue.findIndex(q => q.priority !== 'high');
+                if (insertIdx === -1) pendingQueue.push(item);
+                else pendingQueue.splice(insertIdx, 0, item);
+            } else {
+                pendingQueue.push(item);
+            }
+            drainRequestQueue();
         });
     }
 
@@ -681,20 +844,47 @@ if (window !== window.top) {
     async function request(endpoint, options = {}, retryCount = 0) {
         const MAX_RETRIES = 5;
         const RETRY_DELAY = 3000; // 3 seconds base delay
+        const { priority = 'normal', allowWhenStopped = false, ...fetchOptions } = options;
+        const sessionSignal = allowWhenStopped ? null : (sessionAbortController?.signal || null);
 
-        await enforceDelay();
+        if (sessionSignal?.aborted) {
+            return { success: false, aborted: true, message: 'Session stopped' };
+        }
+
+        const proceed = await enforceDelay(priority, sessionSignal);
+        if (!proceed || sessionSignal?.aborted) {
+            return { success: false, aborted: true, message: 'Session stopped' };
+        }
+
         const url = endpoint.startsWith("http") ? endpoint : `${CONFIG.baseUrl}${endpoint}`;
+        const reqController = new AbortController();
+        let timedOut = false;
+        const timeoutId = setTimeout(() => {
+            timedOut = true;
+            reqController.abort();
+        }, REQUEST_TIMEOUT_MS);
+
+        const onSessionAbort = () => reqController.abort();
+        if (sessionSignal) {
+            if (sessionSignal.aborted) {
+                clearTimeout(timeoutId);
+                return { success: false, aborted: true, message: 'Session stopped' };
+            }
+            sessionSignal.addEventListener('abort', onSessionAbort, { once: true });
+        }
 
         try {
-            const res = await fetch(url, { credentials: "include", ...options });
+            const res = await fetch(url, { credentials: "include", ...fetchOptions, signal: reqController.signal });
 
             // Handle 503 Service Unavailable - retry automatically
             if (res.status === 503) {
+                if (sessionSignal?.aborted) return { success: false, aborted: true, message: 'Session stopped' };
                 if (retryCount < MAX_RETRIES) {
                     const delay = jitter(RETRY_DELAY * (retryCount + 1));
                     console.log(`⚠️ 503 Error - Retry ${retryCount + 1}/${MAX_RETRIES} sau ${(delay / 1000).toFixed(1)}s...`);
                     log(`⚠️ Server 503 - Thử lại lần ${retryCount + 1}/${MAX_RETRIES}...`, 'warning');
-                    await sleep(delay);
+                    await sleep(delay, sessionSignal);
+                    if (sessionSignal?.aborted) return { success: false, aborted: true, message: 'Session stopped' };
                     return request(endpoint, options, retryCount + 1);
                 } else {
                     log(`❌ Server 503 - Đã thử ${MAX_RETRIES} lần không thành công`, 'error');
@@ -704,12 +894,14 @@ if (window !== window.top) {
 
             // Handle 429 Too Many Requests - retry automatically
             if (res.status === 429) {
+                if (sessionSignal?.aborted) return { success: false, aborted: true, message: 'Session stopped' };
                 if (retryCount < MAX_RETRIES) {
                     const retryAfter = res.headers.get('Retry-After');
                     const delay = retryAfter ? parseInt(retryAfter) * 1000 : jitter(RETRY_DELAY * (retryCount + 1) * 2);
                     console.log(`⚠️ 429 Too Many Requests - Retry ${retryCount + 1}/${MAX_RETRIES} sau ${(delay / 1000).toFixed(1)}s...`);
                     log(`⚠️ Rate Limited (429) - Thử lại lần ${retryCount + 1}/${MAX_RETRIES} sau ${(delay / 1000).toFixed(1)}s...`, 'warning');
-                    await sleep(delay);
+                    await sleep(delay, sessionSignal);
+                    if (sessionSignal?.aborted) return { success: false, aborted: true, message: 'Session stopped' };
                     return request(endpoint, options, retryCount + 1);
                 } else {
                     log(`❌ Rate Limited (429) - Đã thử ${MAX_RETRIES} lần không thành công`, 'error');
@@ -731,7 +923,7 @@ if (window !== window.top) {
                         const text = await res.text();
                         if (text.includes("Phiên đã hết hạn") || text.includes("phiên đăng nhập đã hết hạn")) {
                             log("🛑 ⚠️ Phát hiện phiên đăng nhập hết hạn! Đang tự động tải lại trang...", "error");
-                            await sleep(3000);
+                            await sleep(3000, sessionSignal);
                             window.location.reload();
                         }
                         msg = text.substring(0, 200) || msg;
@@ -742,7 +934,7 @@ if (window !== window.top) {
 
                 if (typeof msg === "string" && (msg.includes("Phiên đã hết hạn") || msg.includes("Phiên hết hạn") || msg.includes("phiên đăng nhập hết hạn") || (msg.includes("IP") && msg.includes("thay đổi")))) {
                     log("🛑 ⚠️ Phát hiện phiên đăng nhập hết hạn! Đang tự động tải lại trang...", "error");
-                    await sleep(3000);
+                    await sleep(3000, sessionSignal);
                     window.location.reload();
                 }
 
@@ -756,52 +948,72 @@ if (window !== window.top) {
                 const msg = data?.message || data?.data?.message || "";
                 if (typeof msg === "string" && (msg.includes("Phiên đã hết hạn") || msg.includes("Phiên hết hạn") || msg.includes("phiên đăng nhập hết hạn") || (msg.includes("IP") && msg.includes("thay đổi")))) {
                     log("🛑 ⚠️ Phát hiện phiên đăng nhập hết hạn! Đang tự động tải lại trang...", "error");
-                    await sleep(3000);
+                    await sleep(3000, sessionSignal);
                     window.location.reload();
                 }
             } else {
                 const text = await res.text();
                 if (text.includes("Phiên đã hết hạn") || text.includes("phiên đăng nhập đã hết hạn")) {
                     log("🛑 ⚠️ Phát hiện phiên đăng nhập hết hạn! Đang tự động tải lại trang...", "error");
-                    await sleep(3000);
+                    await sleep(3000, sessionSignal);
                     window.location.reload();
                 }
                 data = JSON.parse(text);
             }
             return data;
         } catch (e) {
+            if (e.name === 'AbortError') {
+                if (sessionSignal?.aborted) {
+                    return { success: false, aborted: true, message: 'Session stopped' };
+                }
+                if (timedOut && retryCount < MAX_RETRIES) {
+                    const delay = jitter(RETRY_DELAY * (retryCount + 1));
+                    log(`⚠️ Request timeout - Thử lại lần ${retryCount + 1}/${MAX_RETRIES}...`, 'warning');
+                    await sleep(delay, sessionSignal);
+                    if (sessionSignal?.aborted) return { success: false, aborted: true, message: 'Session stopped' };
+                    return request(endpoint, options, retryCount + 1);
+                }
+                return { success: false, message: 'Request timeout' };
+            }
             // Network errors - also retry
+            if (sessionSignal?.aborted) return { success: false, aborted: true, message: 'Session stopped' };
             if (retryCount < MAX_RETRIES && (e.message.includes('Failed to fetch') || e.message.includes('NetworkError'))) {
                 const delay = jitter(RETRY_DELAY * (retryCount + 1));
                 console.log(`⚠️ Network error - Retry ${retryCount + 1}/${MAX_RETRIES} sau ${(delay / 1000).toFixed(1)}s...`);
                 log(`⚠️ Lỗi mạng - Thử lại lần ${retryCount + 1}/${MAX_RETRIES}...`, 'warning');
-                await sleep(delay);
+                await sleep(delay, sessionSignal);
+                if (sessionSignal?.aborted) return { success: false, aborted: true, message: 'Session stopped' };
                 return request(endpoint, options, retryCount + 1);
             }
             throw e;
+        } finally {
+            clearTimeout(timeoutId);
+            if (sessionSignal) {
+                sessionSignal.removeEventListener('abort', onSessionAbort);
+            }
         }
     }
 
-    async function postForm(endpoint, data) {
+    async function postForm(endpoint, data, options = {}) {
         return request(endpoint, {
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8", "X-Requested-With": "XMLHttpRequest" },
-            body: new URLSearchParams(data)
+            body: new URLSearchParams(data),
+            ...options
         });
     }
 
-    async function postJson(endpoint, data = {}) {
+    async function postJson(endpoint, data = {}, options = {}) {
         const headers = {
             "Content-Type": "application/json",
             "X-WP-Nonce": CONFIG.nonces.wp
         };
 
-
-
         return request(endpoint, {
             method: "POST",
             headers: headers,
-            body: JSON.stringify(data)
+            body: JSON.stringify(data),
+            ...options
         });
     }
 
@@ -812,7 +1024,7 @@ if (window !== window.top) {
         const fetchPage = async (url) => {
             for (let i = 0; i < 3; i++) {
                 try {
-                    await sleep(2000 + i * 1000);
+                    await sleep(i === 0 ? 250 : 1200 * i);
                     const res = await fetch(`${CONFIG.baseUrl}${url}`, { credentials: "include" });
                     if (res.ok) return await res.text();
                 } catch (e) { }
@@ -857,27 +1069,10 @@ if (window !== window.top) {
                 /open_chest_pl[^}]*security["\s:]+["']([a-f0-9]{10})["']/i,
                 /phuc_loi[^}]*security["\s:]+["']([a-f0-9]{10})["']/i,
             ],
-            boss: [
-                /HH3DBossConfig[\s\S]*?["']nonce["']\s*:\s*["']([a-f0-9]{10})["']/i,
-                /attack_boss[^}]{0,300}nonce["\':=\s]+["']([a-f0-9]{10})["']/i,
-                /action[=:]"attack_boss"[^)]*nonce["\':=\s]+["']([a-f0-9]{10})["']/i,
-                /\.ajax\([^)]*attack_boss[^)]*nonce["\':=\s]+["']([a-f0-9]{10})["']/i,
-                /boss[_-]?nonce["\':=\s]+["']([a-f0-9]{10})["']/i
-            ],
             wp: [
                 /wpApiSettings\s*=\s*{[^}]*nonce\s*:\s*"([a-f0-9]{10})"/i,
                 /customRestNonce\s*=\s*["']([a-f0-9]{10})["']/i,
                 /"nonce"\s*:\s*"([a-f0-9]{10})"/i
-            ],
-            bossGet: [
-                /hh3dData\.act\.bossGet\s*=\s*["']([^"']+)["']/i,
-                /["']bossGet["']\s*:\s*["']([^"']+)["']/i,
-                /bossGet\s*:\s*["']([^"']+)["']/i,
-            ],
-            bossTimer: [
-                /hh3dData\.act\.bossTimer\s*=\s*["']([^"']+)["']/i,
-                /["']bossTimer["']\s*:\s*["']([^"']+)["']/i,
-                /bossTimer\s*:\s*["']([^"']+)["']/i,
             ],
             chestTimer: [
                 /hh3dData\.act\.plTimer\s*=\s*["']([^"']+)["']/i,
@@ -887,21 +1082,17 @@ if (window !== window.top) {
                 /hh3dData\.act\.plOpen\s*=\s*["']([^"']+)["']/i,
                 /["']plOpen["']\s*:\s*["']([^"']+)["']/i,
             ],
-            bossAttack: [
-                /hh3dData\.act\.bossAttack\s*=\s*["']([^"']+)["']/i,
-                /["']bossAttack["']\s*:\s*["']([^"']+)["']/i,
-                /bossAttack\s*:\s*["']([^"']+)["']/i,
-            ],
-            bossAttackToken: [
-                /HH3DBossConfig[\s\S]*?["']attackToken["']\s*:\s*["']([a-f0-9]{32})["']/i,
-                /["']attackToken["']\s*:\s*["']([a-f0-9]{32})["']/i,
-                /attackToken\s*[:=]\s*["']([a-f0-9]{32})["']/i,
-                /boss_attack_token\s*=\s*["']([a-f0-9]{32})["']/i,
-                /boss_attack_token\s*=\s*["']([^"']+)["']/i,
+            chestClaim: [
+                /hh3dData\.act\.plClaim\s*=\s*["']([^"']+)["']/i,
+                /["']plClaim["']\s*:\s*["']([^"']+)["']/i,
             ],
             tltmTimer: [
                 /hh3dData\.act\.tltmTimer\s*=\s*["']([^"']+)["']/i,
                 /["']tltmTimer["']\s*:\s*["']([^"']+)["']/i,
+            ],
+            tltmOpen: [
+                /hh3dData\.act\.tltmOpen\s*=\s*["']([^"']+)["']/i,
+                /["']tltmOpen["']\s*:\s*["']([^"']+)["']/i,
             ],
             tltmAttack: [
                 /hh3dData\.act\.tltmAttack\s*=\s*["']([^"']+)["']/i,
@@ -919,18 +1110,35 @@ if (window !== window.top) {
             if (CONFIG.nonces.securityToken) CONFIG.nonces.securityToken = decodeURIComponent(CONFIG.nonces.securityToken);
             CONFIG.nonces.restNonce = extractSecurity(home, patterns.restNonce);
             CONFIG.nonces.userid = extractSecurity(home, patterns.userid);
-            
+            const homeWpNonce = extractSecurity(home, patterns.wp);
+            if (homeWpNonce) CONFIG.nonces.wp = homeWpNonce;
+            else if (!CONFIG.nonces.wp && CONFIG.nonces.restNonce) CONFIG.nonces.wp = CONFIG.nonces.restNonce;
+
             // Decrypt homepage actions
             const homeDecrypted = decryptHh3dActions(home);
             if (homeDecrypted) {
                 console.log("🐉 [Home Decrypted Actions]:", Object.keys(homeDecrypted));
                 const spinAction = homeDecrypted.lotterySpin || homeDecrypted.spin || homeDecrypted.luckySpin || homeDecrypted.quay || homeDecrypted.quaySo || homeDecrypted.lottery || homeDecrypted.vongQuay;
                 if (isValidSpinRoute(spinAction)) CONFIG.nonces.lotterySpin = spinAction;
+                if (homeDecrypted.plTimer) CONFIG.nonces.chestTimerAction = homeDecrypted.plTimer;
+                if (homeDecrypted.plOpen) CONFIG.nonces.chestOpenAction = homeDecrypted.plOpen;
+                if (homeDecrypted.plClaim) CONFIG.nonces.chestClaimAction = homeDecrypted.plClaim;
                 if (homeDecrypted.bossAttack) CONFIG.nonces.bossAttackAction = homeDecrypted.bossAttack;
                 if (homeDecrypted.bossGet) CONFIG.nonces.bossGetAction = homeDecrypted.bossGet;
                 if (homeDecrypted.bossTimer) CONFIG.nonces.bossTimerAction = homeDecrypted.bossTimer;
+                if (homeDecrypted.bossCheckElem) CONFIG.nonces.bossCheckElemAction = homeDecrypted.bossCheckElem;
+                if (homeDecrypted.bossChangeElem) CONFIG.nonces.bossChangeElemAction = homeDecrypted.bossChangeElem;
                 if (homeDecrypted.tltmTimer) CONFIG.nonces.tltmTimerAction = homeDecrypted.tltmTimer;
+                if (homeDecrypted.tltmOpen) CONFIG.nonces.tltmOpenAction = homeDecrypted.tltmOpen;
                 if (homeDecrypted.tltmAttack) CONFIG.nonces.tltmAttackAction = homeDecrypted.tltmAttack;
+                if (homeDecrypted.vdLoad) CONFIG.nonces.vdLoadAction = homeDecrypted.vdLoad;
+                if (homeDecrypted.vdSave) CONFIG.nonces.vdSaveAction = homeDecrypted.vdSave;
+                if (homeDecrypted.kmList) CONFIG.nonces.kmListAct = homeDecrypted.kmList;
+                if (homeDecrypted.kmEnter) CONFIG.nonces.kmEnterAct = homeDecrypted.kmEnter;
+                if (homeDecrypted.kmClaim) CONFIG.nonces.kmClaimAct = homeDecrypted.kmClaim;
+                if (homeDecrypted.kmUsers) CONFIG.nonces.kmUsersAct = homeDecrypted.kmUsers;
+                if (homeDecrypted.kmReward) CONFIG.nonces.kmRewardAct = homeDecrypted.kmReward;
+                if (homeDecrypted.kmCheck) CONFIG.nonces.kmCheckAct = homeDecrypted.kmCheck;
                 if (homeDecrypted.hdnReward) CONFIG.nonces.dailyRewardAction = homeDecrypted.hdnReward;
             }
             if (!isValidSpinRoute(CONFIG.nonces.lotterySpin)) {
@@ -940,22 +1148,26 @@ if (window !== window.top) {
         }
 
         if (activeWorkers.includes('spin')) {
-            const spinPage = await fetchPage("/vong-quay-phuc-van/");
-            if (spinPage) {
-                const spinDecrypted = decryptHh3dActions(spinPage);
-                const spinAction = spinDecrypted ? (spinDecrypted.lotterySpin || spinDecrypted.spin || spinDecrypted.luckySpin || spinDecrypted.quay || spinDecrypted.quaySo || spinDecrypted.lottery || spinDecrypted.vongQuay) : null;
-                if (spinDecrypted) {
-                    console.log("🐉 [Spin Decrypted Actions]:", Object.keys(spinDecrypted));
-                }
-                if (isValidSpinRoute(spinAction)) {
-                    CONFIG.nonces.lotterySpin = spinAction;
-                    await chrome.storage.local.set({ lastKnownSpinRoute: spinAction });
-                } else {
-                    const extracted = extractSecurity(spinPage, patterns.lotterySpin);
-                    if (isValidSpinRoute(extracted)) {
-                        CONFIG.nonces.lotterySpin = extracted;
+            if (!isValidSpinRoute(CONFIG.nonces.lotterySpin)) {
+                const spinPage = await fetchPage("/vong-quay-phuc-van/");
+                if (spinPage) {
+                    const spinDecrypted = decryptHh3dActions(spinPage);
+                    const spinAction = spinDecrypted ? (spinDecrypted.lotterySpin || spinDecrypted.spin || spinDecrypted.luckySpin || spinDecrypted.quay || spinDecrypted.quaySo || spinDecrypted.lottery || spinDecrypted.vongQuay) : null;
+                    if (spinDecrypted) {
+                        console.log("🐉 [Spin Decrypted Actions]:", Object.keys(spinDecrypted));
+                    }
+                    if (isValidSpinRoute(spinAction)) {
+                        CONFIG.nonces.lotterySpin = spinAction;
+                        await chrome.storage.local.set({ lastKnownSpinRoute: spinAction });
+                    } else {
+                        const extracted = extractSecurity(spinPage, patterns.lotterySpin);
+                        if (isValidSpinRoute(extracted)) {
+                            CONFIG.nonces.lotterySpin = extracted;
+                        }
                     }
                 }
+            } else {
+                await chrome.storage.local.set({ lastKnownSpinRoute: CONFIG.nonces.lotterySpin });
             }
 
             if (!isValidSpinRoute(CONFIG.nonces.lotterySpin)) {
@@ -976,54 +1188,23 @@ if (window !== window.top) {
             }
         }
 
-        const bossPage = await fetchPage(CONFIG.pages.boss);
-        if (bossPage) {
-            const bossCfg = extractBossConfig(bossPage);
-            if (bossCfg?.nonce) {
-                CONFIG.nonces.boss = bossCfg.nonce;
-                console.log("🛡️ [Boss] Nonce from HH3DBossConfig:", CONFIG.nonces.boss);
-            } else {
-                CONFIG.nonces.boss = extractSecurity(bossPage, patterns.boss);
-            }
-
-            if (bossCfg?.attackToken) {
-                CONFIG.nonces.bossAttackToken = bossCfg.attackToken;
-                console.log("🛡️ [Boss] AttackToken from HH3DBossConfig:", CONFIG.nonces.bossAttackToken);
-            } else {
-                CONFIG.nonces.bossAttackToken = extractSecurity(bossPage, patterns.bossAttackToken);
-            }
-
-            if (!CONFIG.nonces.securityToken) {
-                CONFIG.nonces.securityToken = extractSecurity(bossPage, patterns.securityToken);
-                if (CONFIG.nonces.securityToken) CONFIG.nonces.securityToken = decodeURIComponent(CONFIG.nonces.securityToken);
-            }
-
-            // Extract actions từ trang boss
-            const bossDecrypted = decryptHh3dActions(bossPage);
-            if (bossDecrypted) {
-                if (bossDecrypted.bossAttack) CONFIG.nonces.bossAttackAction = bossDecrypted.bossAttack;
-                if (bossDecrypted.bossGet) CONFIG.nonces.bossGetAction = bossDecrypted.bossGet;
-                if (bossDecrypted.bossTimer) CONFIG.nonces.bossTimerAction = bossDecrypted.bossTimer;
-            }
-            if (!CONFIG.nonces.bossAttackAction) {
-                CONFIG.nonces.bossAttackAction = extractSecurity(bossPage, patterns.bossAttack);
-            }
-            if (!CONFIG.nonces.bossGetAction) {
-                CONFIG.nonces.bossGetAction = extractSecurity(bossPage, patterns.bossGet);
-            }
-            if (!CONFIG.nonces.bossTimerAction) {
-                CONFIG.nonces.bossTimerAction = extractSecurity(bossPage, patterns.bossTimer);
+        const needBoss = activeWorkers.length === 0 || activeWorkers.includes('boss');
+        if (needBoss) {
+            const bossPage = await fetchPage(CONFIG.pages.boss);
+            if (bossPage) {
+                applyBossPageConfig(bossPage);
             }
         }
 
         // Extract chest actions from chest page if needed
-        if (activeWorkers.includes('chest')) {
+        if (activeWorkers.includes('chest') && (!CONFIG.nonces.chestTimerAction || !CONFIG.nonces.chestOpenAction || !CONFIG.nonces.chestClaimAction)) {
             const chestPage = await fetchPage(CONFIG.pages.chest);
             if (chestPage) {
                 const chestDecrypted = decryptHh3dActions(chestPage);
                 if (chestDecrypted) {
                     if (chestDecrypted.plTimer) CONFIG.nonces.chestTimerAction = chestDecrypted.plTimer;
                     if (chestDecrypted.plOpen) CONFIG.nonces.chestOpenAction = chestDecrypted.plOpen;
+                    if (chestDecrypted.plClaim) CONFIG.nonces.chestClaimAction = chestDecrypted.plClaim;
                 }
                 if (!CONFIG.nonces.chestTimerAction) {
                     CONFIG.nonces.chestTimerAction = extractSecurity(chestPage, patterns.chestTimer);
@@ -1031,22 +1212,33 @@ if (window !== window.top) {
                 if (!CONFIG.nonces.chestOpenAction) {
                     CONFIG.nonces.chestOpenAction = extractSecurity(chestPage, patterns.chestOpen);
                 }
+                if (!CONFIG.nonces.chestClaimAction) {
+                    CONFIG.nonces.chestClaimAction = extractSecurity(chestPage, patterns.chestClaim);
+                }
             }
         }
 
-        const wpPage = await fetchPage(CONFIG.pages.wp);
-        CONFIG.nonces.wp = extractSecurity(wpPage, patterns.wp);
-        if (wpPage) {
-            const wpDecrypted = decryptHh3dActions(wpPage);
-            if (wpDecrypted) {
-                if (wpDecrypted.tltmTimer) CONFIG.nonces.tltmTimerAction = wpDecrypted.tltmTimer;
-                if (wpDecrypted.tltmAttack) CONFIG.nonces.tltmAttackAction = wpDecrypted.tltmAttack;
-            }
-            if (!CONFIG.nonces.tltmTimerAction) {
-                CONFIG.nonces.tltmTimerAction = extractSecurity(wpPage, patterns.tltmTimer);
-            }
-            if (!CONFIG.nonces.tltmAttackAction) {
-                CONFIG.nonces.tltmAttackAction = extractSecurity(wpPage, patterns.tltmAttack);
+        const needTltmActions = activeWorkers.includes('tltm') && (!CONFIG.nonces.tltmTimerAction || !CONFIG.nonces.tltmOpenAction);
+        if (!CONFIG.nonces.wp || needTltmActions) {
+            const wpPage = await fetchPage(CONFIG.pages.wp);
+            if (wpPage) {
+                const extractedWp = extractSecurity(wpPage, patterns.wp);
+                if (extractedWp) CONFIG.nonces.wp = extractedWp;
+                const wpDecrypted = decryptHh3dActions(wpPage);
+                if (wpDecrypted) {
+                    if (wpDecrypted.tltmTimer) CONFIG.nonces.tltmTimerAction = wpDecrypted.tltmTimer;
+                    if (wpDecrypted.tltmOpen) CONFIG.nonces.tltmOpenAction = wpDecrypted.tltmOpen;
+                    if (wpDecrypted.tltmAttack) CONFIG.nonces.tltmAttackAction = wpDecrypted.tltmAttack;
+                }
+                if (!CONFIG.nonces.tltmTimerAction) {
+                    CONFIG.nonces.tltmTimerAction = extractSecurity(wpPage, patterns.tltmTimer);
+                }
+                if (!CONFIG.nonces.tltmOpenAction) {
+                    CONFIG.nonces.tltmOpenAction = extractSecurity(wpPage, patterns.tltmOpen);
+                }
+                if (!CONFIG.nonces.tltmAttackAction) {
+                    CONFIG.nonces.tltmAttackAction = extractSecurity(wpPage, patterns.tltmAttack);
+                }
             }
         }
 
@@ -1056,7 +1248,7 @@ if (window !== window.top) {
         }
 
         // Fetch daily reward action if needed
-        if (activeWorkers.includes('dailyReward')) {
+        if (activeWorkers.includes('dailyReward') && !CONFIG.nonces.dailyRewardAction) {
             const missionPage = await fetchPage(CONFIG.pages.missions);
             if (missionPage) {
                 const missionDecrypted = decryptHh3dActions(missionPage);
@@ -1069,9 +1261,9 @@ if (window !== window.top) {
         }
 
         const missing = [];
-        if (!CONFIG.nonces.boss) missing.push('Boss');
+        if (needBoss && !CONFIG.nonces.boss) missing.push('Boss');
         if (!CONFIG.nonces.securityToken) missing.push('Token');
-        if (!CONFIG.nonces.bossAttackToken) missing.push('BossToken');
+        if (needBoss && !CONFIG.nonces.bossAttackToken) missing.push('BossToken');
         if (missing.length > 0) {
             log(`⚠️ Nonces thiếu: ${missing.join(', ')}`, "error");
         } else {
@@ -1086,7 +1278,7 @@ if (window !== window.top) {
         const fetchPage = async (url) => {
             for (let i = 0; i < 3; i++) {
                 try {
-                    await sleep(2000 + i * 1000);
+                    await sleep(i === 0 ? 250 : 1200 * i);
                     const res = await fetch(`${CONFIG.baseUrl}${url}`, { credentials: "include" });
                     if (res.ok) return await res.text();
                 } catch (e) { }
@@ -1109,7 +1301,7 @@ if (window !== window.top) {
             return false;
         }
 
-        // Fetch action strings from hh3dData
+        // Fetch action strings from hh3dData + encrypted act payload
         const matchHh3d = miningPage.match(/var\s+hh3dData\s*=\s*({[^;]+})/);
         let miningAct = {};
         if (matchHh3d) {
@@ -1118,11 +1310,17 @@ if (window !== window.top) {
                 if (pd.act) miningAct = pd.act;
             } catch (e) { }
         }
+        const miningDecrypted = decryptHh3dActions(miningPage);
+        if (miningDecrypted) {
+            miningAct = { ...miningAct, ...miningDecrypted };
+        }
 
-        CONFIG.nonces.kmListAct = miningAct.kmList || "load_mines_by_type";
-        CONFIG.nonces.kmEnterAct = miningAct.kmEnter || "enter_mine";
-        CONFIG.nonces.kmClaimAct = miningAct.kmClaim || "claim_mycred_reward";
-        CONFIG.nonces.kmUsersAct = miningAct.kmUsers || "get_users_in_mine";
+        CONFIG.nonces.kmListAct = miningAct.kmList || CONFIG.nonces.kmListAct || "load_mines_by_type";
+        CONFIG.nonces.kmEnterAct = miningAct.kmEnter || CONFIG.nonces.kmEnterAct || "enter_mine";
+        CONFIG.nonces.kmClaimAct = miningAct.kmClaim || CONFIG.nonces.kmClaimAct || "claim_mycred_reward";
+        CONFIG.nonces.kmUsersAct = miningAct.kmUsers || CONFIG.nonces.kmUsersAct || "get_users_in_mine";
+        CONFIG.nonces.kmRewardAct = miningAct.kmReward || CONFIG.nonces.kmRewardAct || "claim_reward_km";
+        CONFIG.nonces.kmCheckAct = miningAct.kmCheck || CONFIG.nonces.kmCheckAct || "check_and_display_reward";
 
         const miningPatterns = {
             securityToken: [
@@ -1147,6 +1345,14 @@ if (window !== window.top) {
                 /hh3dData\.act\.kmUsers[^}]*security[":\s]+["']([a-f0-9]{10})["']/i,
                 /get_users_in_mine[^}]*security[":\s]+["']([a-f0-9]{10})["']/i
             ],
+            kmRewardNonce: [
+                /hh3dData\.act\.kmReward[^}]*security[":\s]+["']([a-f0-9]{10})["']/i,
+                /claim_reward_km[^}]*security[":\s]+["']([a-f0-9]{10})["']/i
+            ],
+            kmCheckNonce: [
+                /hh3dData\.act\.kmCheck[^}]*security[":\s]+["']([a-f0-9]{10})["']/i,
+                /check_and_display_reward[^}]*security[":\s]+["']([a-f0-9]{10})["']/i
+            ],
         };
 
         CONFIG.nonces.securityTokenMiner = extractSecurity(miningPage, miningPatterns.securityToken);
@@ -1158,6 +1364,8 @@ if (window !== window.top) {
         CONFIG.nonces.enterMine = extractSecurity(miningPage, miningPatterns.enterMine);
         CONFIG.nonces.claimMine = extractSecurity(miningPage, miningPatterns.claimMine);
         CONFIG.nonces.getUsersMine = extractSecurity(miningPage, miningPatterns.getUsersMine);
+        CONFIG.nonces.kmRewardNonce = extractSecurity(miningPage, miningPatterns.kmRewardNonce);
+        CONFIG.nonces.kmCheckNonce = extractSecurity(miningPage, miningPatterns.kmCheckNonce);
 
         if (!CONFIG.nonces.userid) {
             CONFIG.nonces.userid = extractSecurity(miningPage, [
@@ -1176,8 +1384,9 @@ if (window !== window.top) {
     }
 
     // ============= DAILY CHECK-IN =============
-    async function dailyCheckIn() {
+    async function dailyCheckIn(sessionId = currentSessionId) {
         try {
+            if (!isRunning || sessionId !== currentSessionId) return;
             if (await isWorkerDone('dailyCheckIn')) {
                 console.log(`📅 Điểm danh đã xong ngày ${getTodayKey()}, bỏ qua`);
                 return;
@@ -1185,6 +1394,7 @@ if (window !== window.top) {
 
             log("📅 Đang điểm danh...", "info");
             const result = await postJson(CONFIG.endpoints.daily, { action: "daily_check_in" });
+            if (result?.aborted || !isRunning || sessionId !== currentSessionId) return;
             const msg = result?.message || '';
             if (result?.success) {
                 log(`✅ Điểm danh: ${msg || 'Thành công'}`, "success");
@@ -1194,7 +1404,11 @@ if (window !== window.top) {
                 if (msg.includes('đã điểm danh') || msg.includes('Đã điểm danh') || msg.includes('hôm nay')) {
                     if (isNearMidnight()) {
                         log("📅 ⚠️ Đang gần nửa đêm. Không đánh dấu điểm danh xong để tránh lỗi ngày mới. Sẽ thử lại sau 5 phút...", "warning");
-                        setTimeout(dailyCheckIn, 300000);
+                        sleep(300000).then(() => {
+                            if (isRunning && sessionId === currentSessionId) {
+                                dailyCheckIn(sessionId);
+                            }
+                        });
                         return;
                     }
                     await markWorkerDone('dailyCheckIn');
@@ -1206,6 +1420,78 @@ if (window !== window.top) {
     }
 
     // ============= WORKER FUNCTIONS =============
+    async function checkAndClaimPhucLoiMilestones() {
+        try {
+            if (!CONFIG.nonces.securityToken) return 0;
+
+            const res = await fetch(`${CONFIG.baseUrl}${CONFIG.pages.chest}`, { credentials: "include" });
+            if (!res.ok) return 0;
+            const html = await res.text();
+            if (!html) return 0;
+
+            if (!CONFIG.nonces.chestClaimAction) {
+                const decrypted = decryptHh3dActions(html);
+                if (decrypted?.plClaim) {
+                    CONFIG.nonces.chestClaimAction = decrypted.plClaim;
+                }
+            }
+
+            const cfg = extractAssignedJsonObject(html, ['plConfig']);
+            if (!cfg) return 0;
+
+            const points = parseInt(cfg.points, 10) || 0;
+            const milestones = Array.isArray(cfg.milestones) ? cfg.milestones : [];
+            const pending = Array.isArray(cfg.pending) ? cfg.pending : [];
+
+            const readyMap = new Map();
+            for (const m of milestones) {
+                if (m && !m.claimed && points >= (Number(m.need) || 0)) {
+                    readyMap.set(Number(m.id), m);
+                }
+            }
+            for (const p of pending) {
+                if (p && p.id != null && !readyMap.has(Number(p.id))) {
+                    readyMap.set(Number(p.id), p);
+                }
+            }
+
+            const readyList = Array.from(readyMap.values());
+            if (readyList.length === 0) return 0;
+
+            const actionClaim = CONFIG.nonces.chestClaimAction || "claim_bonus_reward";
+            let claimedCount = 0;
+
+            for (const m of readyList) {
+                if (!isRunning) break;
+                const needText = m.need != null ? `${points}/${m.need} điểm` : `${points} điểm`;
+                const labelText = m.label ? ` - ${m.label}` : '';
+                log(`🎁 🏆 Đủ điểm nhận rương mốc #${m.id} (${needText}${labelText}). Đang nhận thưởng...`, "info");
+
+                const claimRes = await postForm(CONFIG.endpoints.api, {
+                    action: actionClaim,
+                    security_token: CONFIG.nonces.securityToken,
+                    chest_id: m.id
+                });
+
+                if (claimRes?.success) {
+                    claimedCount++;
+                    const rewardMsg = claimRes.data?.message || claimRes.message || m.label || 'OK';
+                    log(`🎁 ✅ Nhận thưởng rương mốc #${m.id} thành công: ${rewardMsg}`, "success");
+                } else {
+                    const errMsg = claimRes?.data?.message || claimRes?.message || JSON.stringify(claimRes);
+                    log(`🎁 ⚠️ Nhận rương mốc #${m.id} thất bại: ${errMsg}`, "warning");
+                }
+
+                await sleep(3500);
+            }
+
+            return claimedCount;
+        } catch (e) {
+            log(`🎁 ⚠️ Lỗi kiểm tra rương mốc Phúc Lợi: ${e.message}`, "warning");
+            return 0;
+        }
+    }
+
     async function runChestWorker(sessionId) {
         log("🎁 [Chest] Started", "info");
 
@@ -1213,6 +1499,8 @@ if (window !== window.top) {
         const actionTimer = CONFIG.nonces.chestTimerAction || "get_next_time_pl";
         const actionOpen = CONFIG.nonces.chestOpenAction || "open_chest_pl";
         log(`🎁 Actions: Timer='${actionTimer}', Open='${actionOpen}'`, "info");
+
+        await checkAndClaimPhucLoiMilestones();
 
         while (isRunning && sessionId === currentSessionId) {
             try {
@@ -1224,6 +1512,7 @@ if (window !== window.top) {
                 if (!resp?.success) {
                     const errMsg = resp?.message || resp?.data?.message || JSON.stringify(resp) || "Không có response";
                     if (errMsg.includes("hoàn thành")) {
+                        await checkAndClaimPhucLoiMilestones();
                         if (isNearMidnight()) {
                             log("🎁 ⚠️ Đang gần nửa đêm. Không đánh dấu hoàn thành để tránh lỗi ngày mới. Thử lại sau 5 phút...", "warning");
                             await sleep(300000);
@@ -1252,6 +1541,7 @@ if (window !== window.top) {
                 }
 
                 if (currentLevel >= 4) {
+                    await checkAndClaimPhucLoiMilestones();
                     if (isNearMidnight()) {
                         log("🎁 ⚠️ Đang gần nửa đêm. Không đánh dấu hoàn thành để tránh lỗi ngày mới. Thử lại sau 5 phút...", "warning");
                         await sleep(300000);
@@ -1276,6 +1566,7 @@ if (window !== window.top) {
 
                     if (result?.success) {
                         log(`🎁 Mở rương ${chestName} thành công: ${result.data?.message || 'OK'}`, "success");
+                        await checkAndClaimPhucLoiMilestones();
                     } else {
                         const errMsg = result?.message || result?.data?.message || JSON.stringify(result) || 'Lỗi không xác định';
                         if (errMsg.includes("Thiên Cơ") || errMsg.includes("rương trước")) {
@@ -1306,80 +1597,293 @@ if (window !== window.top) {
             const html = await res.text();
             if (!html) return null;
 
+            let parsed = null;
             const match = html.match(/var\s+hh3dData\s*=\s*({[^;]+})/);
             if (match && match[1]) {
                 try {
-                    return JSON.parse(match[1]);
+                    parsed = JSON.parse(match[1]);
                 } catch (e) { }
             }
-            return null;
+
+            const decrypted = decryptHh3dActions(html);
+            if (decrypted) {
+                if (!parsed) parsed = {};
+                parsed.act = { ...(parsed.act || {}), ...decrypted };
+            }
+
+            return parsed;
         } catch (e) {
             return null;
         }
     }
 
-    // Hàm fetch lại boss_attack_token từ trang /hoang-vuc
-    async function fetchBossAttackToken() {
-        console.log("🛡️ Đang fetch boss_attack_token...");
-        try {
-            await sleep(2000);
-            const res = await fetch(`${CONFIG.baseUrl}${CONFIG.pages.boss}`, { credentials: "include" });
-            const html = await res.text();
-            if (!html) return null;
+    // Helper áp dụng toàn bộ config/token/action từ HTML của trang /hoang-vuc (HV2 + hh3dData)
+    function applyBossPageConfig(html) {
+        if (!html) return null;
 
-            const bossCfg = extractBossConfig(html);
-            if (bossCfg?.nonce) {
-                CONFIG.nonces.boss = bossCfg.nonce;
-                console.log(`🛡️ ✓ Cập nhật nonce boss từ HH3DBossConfig: ${bossCfg.nonce}`);
+        const bossCfg = extractBossConfig(html);
+        if (bossCfg?.nonce) {
+            CONFIG.nonces.boss = bossCfg.nonce;
+            console.log(`🛡️ ✓ Cập nhật nonce boss: ${bossCfg.nonce}`);
+        } else {
+            const nonceFallback = html.match(/(?:HV2|HH3DBossConfig)[\s\S]*?["']nonce["']\s*:\s*["']([a-f0-9]{8,})["']/i)
+                || html.match(/boss[_-]?nonce["\':=\s]+["']([a-f0-9]{10})["']/i);
+            if (nonceFallback?.[1]) {
+                CONFIG.nonces.boss = nonceFallback[1];
             }
-            if (bossCfg?.attackToken) {
-                CONFIG.nonces.bossAttackToken = bossCfg.attackToken;
-                console.log(`🛡️ ✓ boss_attack_token OK (HH3DBossConfig)`);
-                return bossCfg.attackToken;
-            }
+        }
 
+        if (bossCfg?.attackToken) {
+            CONFIG.nonces.bossAttackToken = bossCfg.attackToken;
+            console.log("🛡️ ✓ boss_attack_token OK");
+        } else {
             const tokenPatterns = [
-                /HH3DBossConfig[\s\S]*?["']attackToken["']\s*:\s*["']([a-f0-9]{32})["']/i,
-                /["']attackToken["']\s*:\s*["']([a-f0-9]{32})["']/i,
-                /attackToken\s*[:=]\s*["']([a-f0-9]{32})["']/i,
-                /boss_attack_token\s*=\s*["']([a-f0-9]{32})["']/i,
+                /(?:HV2|HH3DBossConfig)[\s\S]*?["']attackToken["']\s*:\s*["']([a-f0-9]{16,})["']/i,
+                /["']attackToken["']\s*:\s*["']([a-f0-9]{16,})["']/i,
+                /attackToken\s*[:=]\s*["']([a-f0-9]{16,})["']/i,
+                /boss_attack_token\s*=\s*["']([a-f0-9]{16,})["']/i,
                 /boss_attack_token\s*=\s*["']([^"']+)["']/i,
             ];
             for (const p of tokenPatterns) {
                 const m = html.match(p);
                 if (m?.[1]) {
-                    console.log(`🛡️ ✓ boss_attack_token OK`);
                     CONFIG.nonces.bossAttackToken = m[1];
-                    return m[1];
+                    console.log("🛡️ ✓ boss_attack_token OK (fallback)");
+                    break;
                 }
             }
-            log("🛡️ ❌ Không tìm thấy boss_attack_token trong HTML", "error");
-            return null;
+        }
+
+        // Cập nhật securityToken mới từ hh3dData trên trang /hoang-vuc
+        const secPatterns = [
+            /hh3dData\.securityToken\s*=\s*["']([A-Za-z0-9+/=%]{30,})["']/i,
+            /"securityToken"\s*:\s*"([A-Za-z0-9+/=%]{30,})"/i,
+            /'securityToken'\s*:\s*'([A-Za-z0-9+/=%]{30,})'/i,
+        ];
+        for (const p of secPatterns) {
+            const m = html.match(p);
+            if (m?.[1]) {
+                CONFIG.nonces.securityToken = decodeURIComponent(m[1]);
+                break;
+            }
+        }
+
+        // Cập nhật các action đã mã hóa (bossAttack, bossGet, bossTimer, bossCheckElem, bossChangeElem)
+        const bossDecrypted = decryptHh3dActions(html);
+        if (bossDecrypted) {
+            if (bossDecrypted.bossAttack) CONFIG.nonces.bossAttackAction = bossDecrypted.bossAttack;
+            if (bossDecrypted.bossGet) CONFIG.nonces.bossGetAction = bossDecrypted.bossGet;
+            if (bossDecrypted.bossTimer) CONFIG.nonces.bossTimerAction = bossDecrypted.bossTimer;
+            if (bossDecrypted.bossCheckElem) CONFIG.nonces.bossCheckElemAction = bossDecrypted.bossCheckElem;
+            if (bossDecrypted.bossChangeElem) CONFIG.nonces.bossChangeElemAction = bossDecrypted.bossChangeElem;
+        } else {
+            const actPatterns = {
+                bossAttackAction: [/hh3dData\.act\.bossAttack\s*=\s*["']([^"']+)["']/i, /["']bossAttack["']\s*:\s*["']([^"']+)["']/i],
+                bossGetAction: [/hh3dData\.act\.bossGet\s*=\s*["']([^"']+)["']/i, /["']bossGet["']\s*:\s*["']([^"']+)["']/i],
+                bossTimerAction: [/hh3dData\.act\.bossTimer\s*=\s*["']([^"']+)["']/i, /["']bossTimer["']\s*:\s*["']([^"']+)["']/i],
+                bossCheckElemAction: [/hh3dData\.act\.bossCheckElem\s*=\s*["']([^"']+)["']/i, /["']bossCheckElem["']\s*:\s*["']([^"']+)["']/i],
+                bossChangeElemAction: [/hh3dData\.act\.bossChangeElem\s*=\s*["']([^"']+)["']/i, /["']bossChangeElem["']\s*:\s*["']([^"']+)["']/i],
+            };
+            for (const [key, list] of Object.entries(actPatterns)) {
+                if (!CONFIG.nonces[key]) {
+                    for (const p of list) {
+                        const m = html.match(p);
+                        if (m?.[1]) {
+                            CONFIG.nonces[key] = m[1];
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (bossCfg?.boss?.id != null) {
+            const nextBossId = String(bossCfg.boss.id);
+            if (nextBossId !== String(bossElementState.bossId || '')) {
+                bossElementState.checkedBossId = null;
+                bossElementState.bossId = nextBossId;
+            }
+        }
+        if (bossCfg?.boss?.element) {
+            bossElementState.bossElement = String(bossCfg.boss.element).toLowerCase();
+        }
+        if (bossCfg?.user) {
+            if (bossCfg.user.element) {
+                bossElementState.userElement = String(bossCfg.user.element).toLowerCase();
+            }
+            bossElementState.freeChange = !!bossCfg.user.freeChange;
+        }
+
+        return bossCfg;
+    }
+
+    // Hàm fetch lại boss_attack_token, nonce và securityToken từ trang /hoang-vuc
+    async function fetchBossAttackToken() {
+        console.log("🛡️ Đang fetch cấu hình/token từ /hoang-vuc...");
+        for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+                await sleep(2000 + attempt * 1000);
+                const res = await fetch(`${CONFIG.baseUrl}${CONFIG.pages.boss}`, { credentials: "include" });
+                if (!res.ok) {
+                    console.warn(`🛡️ HTTP ${res.status} khi fetch /hoang-vuc (lần ${attempt + 1}/3)`);
+                    continue;
+                }
+                const html = await res.text();
+                if (!html) continue;
+
+                applyBossPageConfig(html);
+                if (CONFIG.nonces.bossAttackToken) {
+                    return CONFIG.nonces.bossAttackToken;
+                }
+                if (attempt === 2) {
+                    log("🛡️ ❌ Không tìm thấy boss_attack_token trong HTML", "error");
+                }
+            } catch (e) {
+                if (attempt === 2) {
+                    log(`🛡️ ❌ Fetch boss token lỗi: ${e.message}`, "error");
+                }
+            }
+        }
+        return null;
+    }
+
+    async function claimOldBossReward() {
+        log("🛡️ Đang nhận thưởng từ boss cũ...", "info");
+        const claimResult = await postForm(CONFIG.endpoints.claimboss, { action: "claim_chest", nonce: CONFIG.nonces.boss });
+        if (claimResult?.success) {
+            log(`🛡️ Nhận thưởng thành công: ${claimResult?.message || claimResult?.data?.message || ""}`, "success");
+            return true;
+        }
+        log(`🛡️ Nhận thưởng thất bại: ${claimResult?.message || claimResult?.data?.message || JSON.stringify(claimResult)}`, "error");
+        return false;
+    }
+
+    function isBossAuthOrTokenError(errCode, msg) {
+        const lower = (msg || "").toLowerCase();
+        const code = (errCode || "").toLowerCase();
+        if (code === "token_expired" || code === "invalid_token" || code === "invalid_nonce") return true;
+        return lower.includes("token")
+            || lower.includes("nonce")
+            || lower.includes("bảo mật")
+            || lower.includes("không hợp lệ")
+            || (lower.includes("hết hạn") && !lower.includes("phiên đăng nhập"));
+    }
+
+    const BOSS_ELEMENT_COUNTERS = { kim: 'moc', moc: 'tho', tho: 'thuy', thuy: 'hoa', hoa: 'kim' };
+    const BOSS_ELEMENT_NAMES = { kim: 'Kim', moc: 'Mộc', thuy: 'Thủy', hoa: 'Hỏa', tho: 'Thổ' };
+
+    /**
+     * Tự động kiểm tra và đổi Ngũ Hành miễn phí (nếu còn lượt) khi hệ hiện tại chưa khắc chế Boss Hoang Vực.
+     * Không tự động tiêu tốn Tinh Thạch cho các lần đổi mất phí.
+     */
+    async function optimizeBossElementIfFree(bossId, bossElementFromApi) {
+        try {
+            const currentBossId = bossId != null ? String(bossId) : (bossElementState.bossId || '');
+            if (!currentBossId || bossElementState.checkedBossId === currentBossId) return;
+
+            if (bossElementFromApi) {
+                bossElementState.bossElement = String(bossElementFromApi).toLowerCase();
+            }
+
+            if (!bossElementState.userElement || !bossElementState.bossElement || String(bossElementState.bossId || '') !== currentBossId) {
+                await fetchBossAttackToken();
+                if (bossElementFromApi && !bossElementState.bossElement) {
+                    bossElementState.bossElement = String(bossElementFromApi).toLowerCase();
+                }
+            }
+
+            bossElementState.checkedBossId = currentBossId;
+
+            const bossEl = bossElementState.bossElement;
+            const userEl = bossElementState.userElement;
+            if (!bossEl || !userEl || !BOSS_ELEMENT_COUNTERS[bossEl] || !BOSS_ELEMENT_COUNTERS[userEl]) {
+                return;
+            }
+
+            const bossElName = BOSS_ELEMENT_NAMES[bossEl] || bossEl;
+            const userElName = BOSS_ELEMENT_NAMES[userEl] || userEl;
+
+            if (BOSS_ELEMENT_COUNTERS[userEl] === bossEl) {
+                log(`🛡️ Ngũ Hành hiện tại (${userElName}) đã khắc chế Boss (${bossElName}) ✓`, "info");
+                return;
+            }
+
+            if (!bossElementState.freeChange) {
+                log(`🛡️ Ngũ Hành: ${userElName} vs Boss ${bossElName} (đã dùng lượt đổi miễn phí kỳ này)`, "info");
+                return;
+            }
+
+            const checkRes = await postForm(CONFIG.endpoints.api, {
+                action: CONFIG.nonces.bossCheckElemAction || 'check_free_change_status',
+                nonce: CONFIG.nonces.boss
+            });
+
+            if (!checkRes?.success || !checkRes?.data?.free_change) {
+                bossElementState.freeChange = false;
+                log(`🛡️ Ngũ Hành: ${userElName} vs Boss ${bossElName} (không còn lượt đổi miễn phí)`, "info");
+                return;
+            }
+
+            const changeRes = await postForm(CONFIG.endpoints.api, {
+                action: CONFIG.nonces.bossChangeElemAction || 'change_user_element',
+                nonce: CONFIG.nonces.boss
+            });
+
+            if (changeRes?.success && changeRes?.data?.new_element) {
+                const newEl = String(changeRes.data.new_element).toLowerCase();
+                const newElName = changeRes.data.new_element_name || BOSS_ELEMENT_NAMES[newEl] || newEl;
+                bossElementState.userElement = newEl;
+                bossElementState.freeChange = false;
+
+                let relation = 'trung tính';
+                if (BOSS_ELEMENT_COUNTERS[newEl] === bossEl) {
+                    relation = 'khắc chế Boss!';
+                } else if (BOSS_ELEMENT_COUNTERS[bossEl] === newEl) {
+                    relation = 'bị Boss khắc chế';
+                }
+
+                log(`🛡️ ✅ Đổi Ngũ Hành miễn phí: ${userElName} → ${newElName} (Boss: ${bossElName} — ${relation})`, "success");
+            } else {
+                const errMsg = changeRes?.message || changeRes?.data?.message || JSON.stringify(changeRes);
+                log(`🛡️ ⚠️ Đổi Ngũ Hành miễn phí thất bại: ${errMsg}`, "warning");
+            }
         } catch (e) {
-            log(`🛡️ ❌ Fetch boss token lỗi: ${e.message}`, "error");
-            return null;
+            log(`🛡️ ⚠️ Lỗi kiểm tra/đổi Ngũ Hành: ${e.message}`, "warning");
         }
     }
 
     async function runBossWorker(sessionId) {
         log("🛡️ [Boss] Started", "info");
 
-        let attackToken = CONFIG.nonces.bossAttackToken || null;
-        let bossAttackAction = CONFIG.nonces.bossAttackAction || 'attack_boss';
-        let actionGetBoss = CONFIG.nonces.bossGetAction || "get_boss";
-        let actionTimer = CONFIG.nonces.bossTimerAction || "get_next_attack_time";
-
-        if (!CONFIG.nonces.boss || !attackToken) {
+        if (!CONFIG.nonces.boss || !CONFIG.nonces.bossAttackToken || !CONFIG.nonces.securityToken) {
             log("🛡️ Đang tải cấu hình Boss từ Hoang Vực...", "info");
-            attackToken = await fetchBossAttackToken();
+            await fetchBossAttackToken();
         }
 
         while (isRunning && sessionId === currentSessionId) {
             try {
+                const actionGetBoss = CONFIG.nonces.bossGetAction || "get_boss";
+                const actionTimer = CONFIG.nonces.bossTimerAction || "get_next_attack_time";
+                const bossAttackAction = CONFIG.nonces.bossAttackAction || "attack_boss";
+
+                if (!CONFIG.nonces.boss || !CONFIG.nonces.securityToken || !CONFIG.nonces.bossAttackToken) {
+                    await fetchBossAttackToken();
+                    if (!CONFIG.nonces.boss || !CONFIG.nonces.bossAttackToken) {
+                        log("🛡️ ⚠️ Thiếu nonce/attackToken từ Hoang Vực! Thử lại sau...", "error");
+                        await sleep(CONFIG.delays.error);
+                        continue;
+                    }
+                }
+
                 const boss = await postForm(CONFIG.endpoints.api, { action: actionGetBoss, nonce: CONFIG.nonces.boss });
+                if (boss?.data?.attack_token) {
+                    CONFIG.nonces.bossAttackToken = boss.data.attack_token;
+                }
                 if (!boss?.success || !boss.data?.id) {
                     const errMsg = boss?.message || boss?.data?.message || boss?.data?.error || JSON.stringify(boss) || "Không có response";
-                    if (errMsg.includes("hết lượt") || errMsg.includes("hoàn thành")) {
+                    const errLower = errMsg.toLowerCase();
+                    const errCode = boss?.data?.error_code || "";
+                    if (errLower.includes("hết lượt") || errLower.includes("hoàn thành")) {
                         if (isNearMidnight()) {
                             log("🛡️ ⚠️ Đang gần nửa đêm. Không đánh dấu hoàn thành để tránh lỗi ngày mới. Thử lại sau 5 phút...", "warning");
                             await sleep(300000);
@@ -1390,17 +1894,24 @@ if (window !== window.top) {
                         await sleep(getMsUntilMidnight() + 5000);
                         continue;
                     }
-                    if (errMsg.toLowerCase().includes("nonce") || errMsg.toLowerCase().includes("token") || errMsg.toLowerCase().includes("bảo mật") || errMsg.toLowerCase().includes("không hợp lệ")) {
-                        log(`🛡️ ⚠️ Lỗi get_boss (${errMsg}), đang tải lại nonce/token từ Hoang Vực...`, "warning");
-                        attackToken = await fetchBossAttackToken();
+                    if (errLower.includes("nhận thưởng")) {
+                        await claimOldBossReward();
+                        await sleep(2000);
+                        continue;
                     }
-                    log(`🛡️ get_boss lỗi: ${errMsg}`, "warning");
+                    if (isBossAuthOrTokenError(errCode, errMsg)) {
+                        log(`🛡️ ⚠️ Lỗi get_boss (${errMsg}), đang tải lại nonce/token từ Hoang Vực...`, "warning");
+                        await fetchBossAttackToken();
+                    } else {
+                        log(`🛡️ get_boss lỗi: ${errMsg}`, "warning");
+                    }
                     await sleep(CONFIG.delays.error);
                     continue;
                 }
 
                 const bossId = boss.data.id;
                 log(`🛡️ Boss: ${boss.data.name || "?"} (ID: ${bossId})`, "info");
+                await optimizeBossElementIfFree(bossId, boss.data?.element);
 
                 const timeResp = await postForm(CONFIG.endpoints.api, { action: actionTimer });
                 if (timeResp?.success) {
@@ -1414,9 +1925,9 @@ if (window !== window.top) {
                 }
 
                 // Nếu chưa có token, tự fetch trang /hoang-vuc để lấy
-                if (!attackToken) {
-                    attackToken = await fetchBossAttackToken();
-                    if (!attackToken) {
+                if (!CONFIG.nonces.bossAttackToken || !CONFIG.nonces.boss || !CONFIG.nonces.securityToken) {
+                    await fetchBossAttackToken();
+                    if (!CONFIG.nonces.bossAttackToken) {
                         log("🛡️ ⚠️ Không lấy được attack_token! Thử lại sau...", "error");
                         await sleep(CONFIG.delays.error);
                         continue;
@@ -1428,33 +1939,22 @@ if (window !== window.top) {
                     boss_id: String(bossId),
                     security_token: CONFIG.nonces.securityToken,
                     nonce: CONFIG.nonces.boss,
-                    attack_token: attackToken,
+                    attack_token: CONFIG.nonces.bossAttackToken,
                     request_id: genRequestId()
                 });
 
+                if (result?.data?.attack_token) {
+                    CONFIG.nonces.bossAttackToken = result.data.attack_token;
+                }
+
                 if (result?.success) {
-                    // Cập nhật token mới cho lần attack kế tiếp
-                    if (result.data?.attack_token) {
-                        attackToken = result.data.attack_token;
-                        log("🛡️ Attack thành công ✓ (token updated)", "success");
-                    } else {
-                        log("🛡️ Attack thành công ✓", "success");
-                    }
+                    log(result.data?.attack_token ? "🛡️ Attack thành công ✓ (token updated)" : "🛡️ Attack thành công ✓", "success");
                 } else {
                     const msg = result?.message || result?.data?.error || result?.data?.message || "";
+                    const msgLower = msg.toLowerCase();
                     const errCode = result?.data?.error_code || "";
 
-                    if (errCode === 'token_expired' || msg.includes("token")) {
-                        log("🛡️ ⚠️ Token hết hạn – đang fetch token mới...", "warning");
-                        attackToken = await fetchBossAttackToken();
-                        if (attackToken) {
-                            log("🛡️ Đã lấy token mới, thử lại...", "info");
-                        } else {
-                            log("🛡️ ❌ Không lấy được token mới!", "error");
-                        }
-                        await sleep(2000);
-                        continue;
-                    } else if (msg.includes("hết lượt") || msg.includes("hết lượt tấn công")) {
+                    if (msgLower.includes("hết lượt")) {
                         if (isNearMidnight()) {
                             log("🛡️ ⚠️ Đang gần nửa đêm. Không đánh dấu hoàn thành để tránh lỗi ngày mới. Thử lại sau 5 phút...", "warning");
                             await sleep(300000);
@@ -1463,23 +1963,23 @@ if (window !== window.top) {
                         log("🛡️ ✅ Đã hoàn thành hôm nay", "success");
                         await markWorkerDone('boss');
                         await sleep(getMsUntilMidnight() + 5000);
-                    } else if (msg.includes("nhận thưởng từ boss cũ") || msg.includes("nhận thưởng")) {
-                        log("🛡️ Đang nhận thưởng từ boss cũ...", "info");
-                        const claimResult = await postForm(CONFIG.endpoints.claimboss, { action: "claim_chest", nonce: CONFIG.nonces.boss });
-                        if (claimResult?.success) {
-                            log(`🛡️ Nhận thưởng thành công: ${claimResult?.message || ""}`, "success");
-                        } else {
-                            log(`🛡️ Nhận thưởng thất bại: ${claimResult?.message || JSON.stringify(claimResult)}`, "error");
-                        }
+                    } else if (msgLower.includes("nhận thưởng")) {
+                        await claimOldBossReward();
                         log("🛡️ Sẽ thử attack lại ngay...", "info");
                         await sleep(2000);
                         continue;
-                    } else {
-                        // Cập nhật token mới nếu response trả về (kể cả khi fail)
-                        if (result?.data?.attack_token) {
-                            attackToken = result.data.attack_token;
+                    } else if (isBossAuthOrTokenError(errCode, msg)) {
+                        log(`🛡️ ⚠️ Token/Nonce lỗi (${msg || errCode}) – đang fetch mới...`, "warning");
+                        const freshToken = await fetchBossAttackToken();
+                        if (freshToken) {
+                            log("🛡️ Đã lấy token/nonce mới, thử lại...", "info");
+                        } else {
+                            log("🛡️ ❌ Không lấy được token mới!", "error");
                         }
-                        log(`🛡️ Attack thất bại: ${msg}`, "warning");
+                        await sleep(2000);
+                        continue;
+                    } else {
+                        log(`🛡️ Attack thất bại: ${msg || JSON.stringify(result)}`, "warning");
                         await sleep(CONFIG.delays.error);
                     }
                 }
@@ -1490,19 +1990,101 @@ if (window !== window.top) {
         }
     }
 
+    async function fetchBossTongMonConfig() {
+        try {
+            const res = await fetch(`${CONFIG.baseUrl}${CONFIG.pages.wp}`, { credentials: "include" });
+            if (!res.ok) return null;
+            const html = await res.text();
+            const cfg = extractAssignedJsonObject(html, ['BossSystemConfig']);
+            if (cfg?.nonce) {
+                CONFIG.nonces.wp = cfg.nonce;
+            }
+            return cfg;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    async function claimBossTongMonReward() {
+        if (!CONFIG.nonces.wp) {
+            await fetchBossTongMonConfig();
+        }
+        if (!CONFIG.nonces.wp) {
+            log("⚔️ ⚠️ Thiếu WP Nonce, không thể nhận thưởng Boss Tông Môn", "warning");
+            return false;
+        }
+
+        const result = await postJson(`${CONFIG.endpoints.tongMon}/claim-boss-reward`);
+        if (result?.success) {
+            const details = result.reward_details || {};
+            const parts = [];
+            if (details.cong_hien) parts.push(`+${details.cong_hien} Cống hiến`);
+            if (details.tu_vi) parts.push(`+${details.tu_vi} Tu Vi`);
+            if (details.tinh_thach) parts.push(`+${details.tinh_thach} Tinh Thạch`);
+            const detailText = parts.length > 0 ? ` (${parts.join(', ')})` : '';
+            log(`⚔️ 🎁 Nhận thưởng Boss Tông Môn thành công: ${result.message || 'OK'}${detailText}`, "success");
+            return true;
+        }
+
+        const errMsg = result?.message || JSON.stringify(result);
+        log(`⚔️ ⚠️ Nhận thưởng Boss Tông Môn thất bại: ${errMsg}`, "warning");
+        return false;
+    }
+
+    async function checkAndClaimBossTongMonReward() {
+        const cfg = await fetchBossTongMonConfig();
+        if (cfg?.currentBoss?.has_pending_reward) {
+            const rewardData = cfg.currentBoss.reward_data || {};
+            const bossLabel = rewardData.boss_name ? `${rewardData.boss_name}` : 'Boss Tông Môn';
+            const rankLabel = rewardData.rank_position ? ` (Hạng #${rewardData.rank_position})` : '';
+            log(`⚔️ 🎁 Phát hiện thưởng ${bossLabel}${rankLabel} chưa nhận, đang nhận thưởng...`, "info");
+            const claimed = await claimBossTongMonReward();
+            return { claimed, cfg };
+        }
+        return { claimed: false, cfg };
+    }
+
     async function runBossTongMonWorker(sessionId) {
         log("⚔️ [Boss TM] Started", "info");
+        await checkAndClaimBossTongMonReward();
+
         while (isRunning && sessionId === currentSessionId) {
             try {
                 const info = await postJson(`${CONFIG.endpoints.tongMon}/check-attack-cooldown`);
 
+                if (info?.has_pending_reward || (info?.message || "").toLowerCase().includes("nhận thưởng")) {
+                    await claimBossTongMonReward();
+                    await sleep(2000);
+                    continue;
+                }
+
                 if (!info?.success) {
-                    log("⚔️ Lỗi check cooldown", "warning");
+                    const errMsg = info?.message || "";
+                    const errLower = errMsg.toLowerCase();
+                    if (errLower.includes("nhận thưởng") || errLower.includes("thưởng chưa nhận")) {
+                        await claimBossTongMonReward();
+                        await sleep(2000);
+                        continue;
+                    }
+
+                    const { claimed, cfg } = await checkAndClaimBossTongMonReward();
+                    if (claimed) {
+                        await sleep(2000);
+                        continue;
+                    }
+                    if (cfg?.currentBoss && !cfg.currentBoss.has_boss && !cfg.currentBoss.has_pending_reward) {
+                        log("⚔️ Hiện chưa có Boss Tông Môn đang hoạt động – kiểm tra lại sau 5 phút...", "info");
+                        await sleep(300000);
+                        continue;
+                    }
+
+                    log(`⚔️ Lỗi check cooldown${errMsg ? `: ${errMsg}` : ''}`, "warning");
                     await sleep(CONFIG.delays.error);
                     continue;
                 }
 
                 if (info.cooldown_type === "daily_limit" || info.remaining_attacks === 0) {
+                    await checkAndClaimBossTongMonReward();
                     if (isNearMidnight()) {
                         log("⚔️ ⚠️ Đang gần nửa đêm. Không đánh dấu hoàn thành để tránh lỗi ngày mới. Thử lại sau 5 phút...", "warning");
                         await sleep(300000);
@@ -1520,8 +2102,19 @@ if (window !== window.top) {
 
                     if (result?.success) {
                         log(`⚔️ Attack thành công: ${result.message} | HP: ${result.boss_hp}/${result.boss_max_hp}`, "success");
+                        if (result.boss_defeated) {
+                            log("⚔️ 🎉 Boss Tông Môn đã bị hạ gục! Đang nhận thưởng...", "success");
+                            await sleep(3000);
+                            await claimBossTongMonReward();
+                        }
                     } else {
-                        log(`⚔️ Attack thất bại: ${result?.message || "Unknown"}`, "warning");
+                        const errMsg = result?.message || "Unknown";
+                        if (errMsg.toLowerCase().includes("nhận thưởng")) {
+                            await claimBossTongMonReward();
+                            await sleep(2000);
+                            continue;
+                        }
+                        log(`⚔️ Attack thất bại: ${errMsg}`, "warning");
                     }
 
                     await sleep(CONFIG.delays.check);
@@ -1598,10 +2191,25 @@ if (window !== window.top) {
                         }
                         log("🎡 ✅ Đã hoàn thành hôm nay. Chờ đến 0h hoặc Mốc 2...", "success");
                         await markWorkerDone('spin');
-                        const wakeTime = Date.now() + getMsUntilMidnight() + 5000;
-                        while (Date.now() < wakeTime && !forceSpinCheck) {
-                            if (!isRunning || sessionId !== currentSessionId) break;
-                            await sleep(5000);
+                        if (!forceSpinCheck) {
+                            if (spinWakeController) spinWakeController.abort();
+                            spinWakeController = new AbortController();
+                            const sessSignal = sessionAbortController?.signal;
+                            const onSessAbort = () => {
+                                if (spinWakeController && !spinWakeController.signal.aborted) {
+                                    spinWakeController.abort();
+                                }
+                            };
+                            if (sessSignal) {
+                                if (sessSignal.aborted) spinWakeController.abort();
+                                else sessSignal.addEventListener('abort', onSessAbort, { once: true });
+                            }
+                            try {
+                                await sleep(getMsUntilMidnight() + 5000, spinWakeController.signal);
+                            } finally {
+                                if (sessSignal) sessSignal.removeEventListener('abort', onSessAbort);
+                                spinWakeController = null;
+                            }
                         }
                         forceSpinCheck = false;
                     } else if (msg.includes("Cần tối thiểu") && msg.includes("Tu Vi")) {
@@ -1631,10 +2239,12 @@ if (window !== window.top) {
     async function runTltmWorker(sessionId) {
         log("💎 [TLTM] Started", "info");
 
-        // Dynamically get action strings
-        const pageData = await fetchHh3dDataAndNonces("/thi-luyen-tong-mon-hh3d");
-        const actionTimer = (pageData && pageData.act && pageData.act.tltmTimer) ? pageData.act.tltmTimer : "get_remaining_time_tltm";
-        const actionOpen = (pageData && pageData.act && pageData.act.tltmOpen) ? pageData.act.tltmOpen : "open_chest_tltm";
+        // Dynamically get action strings if not already resolved
+        const pageData = (!CONFIG.nonces.tltmTimerAction || !CONFIG.nonces.tltmOpenAction)
+            ? await fetchHh3dDataAndNonces("/thi-luyen-tong-mon-hh3d")
+            : null;
+        const actionTimer = pageData?.act?.tltmTimer || CONFIG.nonces.tltmTimerAction || "get_remaining_time_tltm";
+        const actionOpen = pageData?.act?.tltmOpen || CONFIG.nonces.tltmOpenAction || "open_chest_tltm";
         console.log(`💎 [TLTM] Actions: Timer='${actionTimer}', Open='${actionOpen}'`);
 
         while (isRunning && sessionId === currentSessionId) {
@@ -1711,10 +2321,11 @@ if (window !== window.top) {
 
     // ============= VẤN ĐÁP ANSWERS DATA =============
     let VANDAP_ANSWERS = null;
+    let VANDAP_NORMALIZED_LIST = null;
 
     // Hàm load answers từ file JSON
     async function loadVanDapAnswers() {
-        if (VANDAP_ANSWERS) return true; // Đã load rồi
+        if (VANDAP_ANSWERS && VANDAP_NORMALIZED_LIST) return true; // Đã load rồi
 
         try {
             const url = chrome.runtime.getURL('answers.json');
@@ -1723,7 +2334,12 @@ if (window !== window.top) {
                 throw new Error(`HTTP ${response.status}`);
             }
             VANDAP_ANSWERS = await response.json();
-            log(`❓ Đã tải ${Object.keys(VANDAP_ANSWERS).length} câu trả lời từ answers.json`, "success");
+            VANDAP_NORMALIZED_LIST = Object.entries(VANDAP_ANSWERS).map(([k, v]) => ({
+                key: k,
+                normKey: normalizeString(k),
+                answer: v
+            }));
+            log(`❓ Đã tải ${VANDAP_NORMALIZED_LIST.length} câu trả lời từ answers.json`, "success");
             return true;
         } catch (e) {
             log(`❓ Lỗi khi tải answers.json: ${e.message}`, "error");
@@ -1748,16 +2364,15 @@ if (window !== window.top) {
 
         let rawAnswer = VANDAP_ANSWERS[question];
 
-        if (!rawAnswer) {
+        if (!rawAnswer && VANDAP_NORMALIZED_LIST) {
             const normQuestion = normalizeString(question);
-            const foundKey = Object.keys(VANDAP_ANSWERS).find(k => {
-                const normKey = normalizeString(k);
-                return normKey === normQuestion || normKey.includes(normQuestion) || normQuestion.includes(normKey);
-            });
+            const foundItem = VANDAP_NORMALIZED_LIST.find(item =>
+                item.normKey === normQuestion || item.normKey.includes(normQuestion) || normQuestion.includes(item.normKey)
+            );
 
-            if (foundKey) {
-                rawAnswer = VANDAP_ANSWERS[foundKey];
-                log(`❓ ⚠️ Tìm thấy câu hỏi gần đúng: "${foundKey}"`, "info");
+            if (foundItem) {
+                rawAnswer = foundItem.answer;
+                log(`❓ ⚠️ Tìm thấy câu hỏi gần đúng: "${foundItem.key}"`, "info");
             }
         }
 
@@ -1795,10 +2410,12 @@ if (window !== window.top) {
                 }
 
                 log("❓ Đang tải câu hỏi vấn đáp...", "info");
-                // Dynamically get action strings
-                const pageData = await fetchHh3dDataAndNonces("/van-dap-tong-mon");
-                const actionVdLoad = (pageData && pageData.act && pageData.act.vdLoad) ? pageData.act.vdLoad : "load_quiz_data";
-                const actionVdSave = (pageData && pageData.act && pageData.act.vdSave) ? pageData.act.vdSave : "save_quiz_result";
+                // Dynamically get action strings if not already resolved
+                const pageData = (!CONFIG.nonces.vdLoadAction || !CONFIG.nonces.vdSaveAction)
+                    ? await fetchHh3dDataAndNonces("/van-dap-tong-mon")
+                    : null;
+                const actionVdLoad = pageData?.act?.vdLoad || CONFIG.nonces.vdLoadAction || "load_quiz_data";
+                const actionVdSave = pageData?.act?.vdSave || CONFIG.nonces.vdSaveAction || "save_quiz_result";
                 console.log(`❓ [Vấn Đáp] Actions: Load='${actionVdLoad}', Save='${actionVdSave}'`);
 
                 const quizData = await postForm(CONFIG.endpoints.api, {
@@ -1966,8 +2583,8 @@ if (window !== window.top) {
                         log(`🎁 ✅ ${stage}: ${msg}`, "success");
                         claimedStages.add(stage);
                         if (stage === "stage2") {
-                            forceSpinCheck = true;
                             await clearWorkerDone('spin');
+                            wakeSpinWorker();
                             log("🎡 Đã nhận thành công Mốc 2 từ Auto Worker. Kích hoạt lượt quay mới!", "success");
                         }
                     } else {
@@ -1977,8 +2594,8 @@ if (window !== window.top) {
                             log(`🎁 ${stage}: Đã nhận trước đó`, "info");
                             claimedStages.add(stage);
                             if (stage === "stage2") {
-                                forceSpinCheck = true;
                                 await clearWorkerDone('spin');
+                                wakeSpinWorker();
                                 log("🎡 Mốc 2 đã nhận trước đó. Đảm bảo kích hoạt lượt quay mới!", "info");
                             }
                         } else if (errMsg.includes("chưa đủ điều kiện") || errMsg.includes("chưa đạt")) {
@@ -2020,6 +2637,59 @@ if (window !== window.top) {
     }
 
     // ============= MINING WORKER =============
+    function getMiningClaimIntervalMs(mineType) {
+        const type = String(mineType || '').toLowerCase();
+        if (type === 'gold') return 15 * 60 * 1000;   // Khoáng Thượng: tích lũy tối đa 15 phút
+        if (type === 'copper') return 90 * 60 * 1000; // Khoáng Hạ: tích lũy tối đa 90 phút
+        return 30 * 60 * 1000;                        // Khoáng Trung (silver) / mặc định: 30 phút
+    }
+
+    async function checkAndClaimPendingMiningReward() {
+        try {
+            if (!CONFIG.nonces.kmCheckNonce || !CONFIG.nonces.kmRewardNonce || !CONFIG.nonces.securityTokenMiner) {
+                await fetchMiningNonces();
+            }
+            if (!CONFIG.nonces.kmCheckNonce || !CONFIG.nonces.kmRewardNonce || !CONFIG.nonces.securityTokenMiner) {
+                return false;
+            }
+
+            const checkRes = await postForm(CONFIG.endpoints.api, {
+                action: CONFIG.nonces.kmCheckAct || "check_and_display_reward",
+                security: CONFIG.nonces.kmCheckNonce
+            });
+
+            if (!checkRes?.success || !checkRes?.data?.reward_html) {
+                return false;
+            }
+
+            log("⛏️ Phát hiện phần thưởng Khoáng Mạch chưa nhận (bị sát hại/trục xuất) - Đang nhận...", "info");
+            const rewardRes = await postForm(CONFIG.endpoints.api, {
+                action: CONFIG.nonces.kmRewardAct || "claim_reward_km",
+                security_token: CONFIG.nonces.securityTokenMiner,
+                security: CONFIG.nonces.kmRewardNonce
+            });
+
+            if (rewardRes?.success) {
+                const mineName = rewardRes.data?.mine_name || "?";
+                const timeSpent = rewardRes.data?.time_spent || 0;
+                const totalTuVi = rewardRes.data?.total_tuvi || 0;
+                const totalTinhThach = rewardRes.data?.total_tinh_thach || 0;
+                log(`⛏️ ✅ Đã nhận thưởng tồn đọng (${mineName}, ${timeSpent} phút): +${totalTuVi} Tu Vi, +${totalTinhThach} Tinh Thạch`, "success");
+                return true;
+            }
+
+            const errMsg = rewardRes?.data?.message || rewardRes?.message || JSON.stringify(rewardRes);
+            if (errMsg.includes("Phiên đã hết hạn") || errMsg.includes("hết hạn") || (errMsg.includes("IP") && errMsg.includes("thay đổi"))) {
+                await fetchMiningNonces();
+            }
+            log(`⛏️ ⚠️ Nhận thưởng tồn đọng thất bại: ${errMsg}`, "warning");
+            return false;
+        } catch (e) {
+            log(`⛏️ ⚠️ Lỗi kiểm tra thưởng tồn đọng: ${e.message}`, "warning");
+            return false;
+        }
+    }
+
     async function runMiningWorker(sessionId) {
         log("⛏️ [Mining] Started", "info");
 
@@ -2035,6 +2705,8 @@ if (window !== window.top) {
 
         let mineId = CONFIG.miningConfig.mineId;
         let mineType = CONFIG.miningConfig.mineType || "silver";
+        const claimIntervalMs = getMiningClaimIntervalMs(mineType);
+        const claimIntervalMinutes = Math.round(claimIntervalMs / 60000);
 
         if (!mineId) {
             log(`⛏️ Đang load danh sách mỏ ${mineType}...`, "info");
@@ -2058,6 +2730,8 @@ if (window !== window.top) {
             mineId = availableMine.id;
             log(`⛏️ Đã chọn mỏ: ${availableMine.name} (ID: ${mineId})`, "info");
         }
+
+        await checkAndClaimPendingMiningReward();
 
         while (isRunning && sessionId === currentSessionId) {
             try {
@@ -2132,9 +2806,10 @@ if (window !== window.top) {
 
                     const message = claimResult?.data?.message || "";
                     log(`⛏️ ✅ Claim thành công: ${message}`, "success");
-                    log(`⛏️ Đợi 30 phút...`, "info");
-                    await sleep(30 * 60 * 1000);
+                    log(`⛏️ Đợi ${claimIntervalMinutes} phút (tối đa tích lũy)...`, "info");
+                    await sleep(claimIntervalMs);
                 } else {
+                    await checkAndClaimPendingMiningReward();
                     log(`⛏️ Không trong mỏ! Đang vào mỏ ID ${mineId}...`, "warning");
                     const enterResult = await postForm(CONFIG.endpoints.api, {
                         action: CONFIG.nonces.kmEnterAct || "enter_mine",
@@ -2168,8 +2843,8 @@ if (window !== window.top) {
                         continue;
                     }
 
-                    log(`⛏️ ✅ Đã vào mỏ thành công! Đợi 30 phút...`, "success");
-                    await sleep(30 * 60 * 1000);
+                    log(`⛏️ ✅ Đã vào mỏ thành công! Đợi ${claimIntervalMinutes} phút...`, "success");
+                    await sleep(claimIntervalMs);
                 }
             } catch (e) {
                 log(`⛏️ Error: ${e.message}`, "error");
@@ -2230,7 +2905,7 @@ if (window !== window.top) {
             }
         }
 
-        async function callLdApi(path, method = "GET", body = null) {
+        async function callLdApi(path, method = "GET", body = null, priority = "normal") {
             const token = await ensureLuyenDanToken();
             if (!token) {
                 throw new Error("Không có Luyện Đan session token");
@@ -2248,7 +2923,8 @@ if (window !== window.top) {
             return request(endpoint, {
                 method: method,
                 headers: headers,
-                body: body ? JSON.stringify(body) : undefined
+                body: body ? JSON.stringify(body) : undefined,
+                priority: priority
             });
         }
 
@@ -2404,7 +3080,7 @@ if (window !== window.top) {
                             const cooldown = craft ? (craft.tune_cooldown_left_sec | 0) : 0;
                             if (cooldown <= 0) {
                                 log(`🧪 🔥 Độ ổn định tụt xuống ${stability.toFixed(1)}% <= 68%. Tiến hành Điều Hỏa...`, "warning");
-                                const tuneRes = await callLdApi("/tune", "POST", {});
+                                const tuneRes = await callLdApi("/tune", "POST", {}, "high");
                                 if (tuneRes && tuneRes.success !== false && !tuneRes.code && (tuneRes.success || tuneRes.data)) {
                                     const newStability = tuneRes.data?.craft?.stability_pct || stability;
                                     const newCount = tuneRes.data?.craft?.tune_count || (tuneCount + 1);
@@ -2427,10 +3103,7 @@ if (window !== window.top) {
                         }
                     } else {
                         log(`🧪 Lò đan đã an toàn tuyệt đối. Chờ hoàn thành sau ${timerLeftSec}s...`, "success");
-                        const finishTime = Date.now() + (timerLeftSec * 1000) + 3000; // 3s buffer
-                        while (Date.now() < finishTime && isRunning && sessionId === currentSessionId) {
-                            await sleep(5000);
-                        }
+                        await sleep((timerLeftSec * 1000) + 3000);
                         continue;
                     }
                 }
@@ -2565,47 +3238,41 @@ if (window !== window.top) {
                     continue;
                 }
 
-                // 2. Lấy trạng thái hiện tại từ màn hình game
-                const screenState = await runInPage(`
-                    const screenLoading = document.getElementById("screen-loading");
-                    const screenBattle = document.getElementById("screen-battle");
-                    const screenLobby = document.getElementById("screen-lobby");
-                    const roomPanel = document.getElementById("room-panel");
-                    const lobbyOverview = document.getElementById("lobby-overview");
+                // 2. Lấy trạng thái hiện tại từ màn hình game (đọc DOM trực tiếp, chỉ gọi bridge cho biến/hàm MAIN world)
+                const screenLoading = document.getElementById("screen-loading");
+                const screenBattle = document.getElementById("screen-battle");
+                const screenLobby = document.getElementById("screen-lobby");
+                const roomPanel = document.getElementById("room-panel");
+                const lobbyOverview = document.getElementById("lobby-overview");
 
-                    const inBattle = screenBattle && screenBattle.classList.contains("active");
-                    const inLobby = screenLobby && screenLobby.classList.contains("active") && lobbyOverview && !lobbyOverview.classList.contains("hidden");
-                    const inRoom = screenLobby && screenLobby.classList.contains("active") && roomPanel && !roomPanel.classList.contains("hidden");
-                    const isLoading = screenLoading && !screenLoading.classList.contains("mc-loaded") && !inBattle && !inLobby && !inRoom;
+                const inBattle = !!(screenBattle && screenBattle.classList.contains("active"));
+                const inLobby = !!(screenLobby && screenLobby.classList.contains("active") && lobbyOverview && !lobbyOverview.classList.contains("hidden"));
+                const inRoom = !!(screenLobby && screenLobby.classList.contains("active") && roomPanel && !roomPanel.classList.contains("hidden"));
+                const isLoading = !!(screenLoading && !screenLoading.classList.contains("mc-loaded") && !inBattle && !inLobby && !inRoom);
 
-                    // Nhận diện vai trò Chủ phòng (Host) hoặc Thành viên (Member)
-                    let isHost = false;
-                    const btnStart = document.getElementById("btn-start");
-                    if (btnStart) {
-                        const txt = (btnStart.textContent || "").trim().toUpperCase();
-                        if (txt.includes("BẮT ĐẦU") || txt.includes("START")) {
-                            isHost = true;
-                        } else if (txt.includes("SẴN SÀNG") || txt.includes("HỦY") || txt.includes("READY")) {
-                            isHost = false;
-                        }
+                let isHost = false;
+                const btnStart = document.getElementById("btn-start");
+                if (btnStart) {
+                    const txt = (btnStart.textContent || "").trim().toUpperCase();
+                    if (txt.includes("BẮT ĐẦU") || txt.includes("START")) {
+                        isHost = true;
+                    } else if (txt.includes("SẴN SÀNG") || txt.includes("HỦY") || txt.includes("READY")) {
+                        isHost = false;
                     }
-                    if (!isHost && typeof Ne === 'function') {
-                        try { isHost = Ne(); } catch (e) {}
-                    }
-                    if (!isHost && arg && arg.role === 'host' && inRoom) {
-                        if (btnStart && !btnStart.textContent.includes("SẴN SÀNG")) {
-                            isHost = true;
-                        }
-                    }
-
-                    return { isLoading, inBattle, inRoom, inLobby, isHost };
-                `, { role: CONFIG.mecungConfig.role });
-
-                if (!screenState) {
-                    log("⚠️ Không thể kết nối với trang game Mê Cung. Đang thử lại...", "warning");
-                    await sleep(3000);
-                    continue;
                 }
+                let mcGlobals = null;
+                if (!isHost && inRoom) {
+                    mcGlobals = await callPageBridge('mcGetGlobals');
+                    if (mcGlobals?.isHostFromNe) {
+                        isHost = true;
+                    }
+                }
+                if (!isHost && CONFIG.mecungConfig.role === 'host' && inRoom) {
+                    if (btnStart && !btnStart.textContent.includes("SẴN SÀNG")) {
+                        isHost = true;
+                    }
+                }
+                const screenState = { isLoading, inBattle, inRoom, inLobby, isHost };
 
                 // Ghi log trạng thái khi thay đổi
                 const stateKey = `${screenState.inLobby}-${screenState.inRoom}-${screenState.inBattle}-${screenState.isLoading}-${screenState.isHost}`;
@@ -2615,7 +3282,7 @@ if (window !== window.top) {
                     else if (screenState.inBattle) stateName = "Trong Trận Chiến";
                     else if (screenState.inRoom) stateName = "Trong Phòng Chờ " + (screenState.isHost ? "(Chủ phòng)" : "(Thành viên)");
                     else if (screenState.inLobby) stateName = "Đang ở Sảnh";
-                    
+
                     log(`📱 Trạng thái game: ${stateName}`, "info");
                     lastStateKey = stateKey;
                 }
@@ -2626,43 +3293,44 @@ if (window !== window.top) {
                 }
 
                 // 3. Kiểm tra giới hạn Tinh Thạch ngày (Chỉ kiểm tra khi game đã load xong)
-                const stats = await runInPage(`
-                    const extractNum = (text) => {
-                        if (!text) return null;
-                        const match = text.match(/\\d+/);
-                        return match ? parseInt(match[0], 10) : null;
-                    };
+                const extractNum = (text) => {
+                    if (!text) return null;
+                    const match = text.match(/\d+/);
+                    return match ? parseInt(match[0], 10) : null;
+                };
 
-                    const usedEl = document.getElementById("mc-ht-daily-used");
-                    const capEl = document.getElementById("mc-ht-daily-cap");
+                const usedEl = document.getElementById("mc-ht-daily-used");
+                const capEl = document.getElementById("mc-ht-daily-cap");
 
-                    let used = usedEl ? extractNum(usedEl.textContent) : null;
-                    let cap = capEl ? extractNum(capEl.textContent) : null;
+                let used = usedEl ? extractNum(usedEl.textContent) : null;
+                let cap = capEl ? extractNum(capEl.textContent) : null;
 
-                    // Fallback nếu không có ID riêng biệt
-                    if (used === null || cap === null) {
-                        const dailyEl = document.getElementById("mc-ht-daily") || 
-                                        document.querySelector(".mc-ht-daily") || 
-                                        document.querySelector('[id*="ht-daily"]') ||
-                                        document.querySelector('[id*="tinh-thach"]') ||
-                                        document.querySelector('[class*="ht-daily"]');
-                        if (dailyEl) {
-                            const m = (dailyEl.textContent || "").match(/(\\d+)\\s*[/:]\\s*(\\d+)/);
-                            if (m) {
-                                if (used === null) used = parseInt(m[1], 10);
-                                if (cap === null) cap = parseInt(m[2], 10);
-                            }
+                // Fallback nếu không có ID riêng biệt
+                if (used === null || cap === null) {
+                    const dailyEl = document.getElementById("mc-ht-daily") ||
+                        document.querySelector(".mc-ht-daily") ||
+                        document.querySelector('[id*="ht-daily"]') ||
+                        document.querySelector('[id*="tinh-thach"]') ||
+                        document.querySelector('[class*="ht-daily"]');
+                    if (dailyEl) {
+                        const m = (dailyEl.textContent || "").match(/(\d+)\s*[/:]\s*(\d+)/);
+                        if (m) {
+                            if (used === null) used = parseInt(m[1], 10);
+                            if (cap === null) cap = parseInt(m[2], 10);
                         }
                     }
+                }
 
-                    // Fallback từ WP object trong game
-                    if (typeof WP !== 'undefined') {
-                        if (used === null && typeof WP.htDailyUsed !== 'undefined') used = parseInt(WP.htDailyUsed, 10);
-                        if (cap === null && typeof WP.htDailyCap !== 'undefined') cap = parseInt(WP.htDailyCap, 10);
+                // Fallback từ WP object trong game qua bridge
+                if (used === null || cap === null) {
+                    if (!mcGlobals) mcGlobals = await callPageBridge('mcGetGlobals');
+                    if (mcGlobals) {
+                        if (used === null && mcGlobals.wpDailyUsed != null) used = mcGlobals.wpDailyUsed;
+                        if (cap === null && mcGlobals.wpDailyCap != null) cap = mcGlobals.wpDailyCap;
                     }
+                }
 
-                    return { used, cap };
-                `);
+                const stats = { used, cap };
 
                 const customCap = CONFIG.mecungConfig.maxCap;
                 const effectiveCap = customCap || (stats && stats.cap);
@@ -2676,16 +3344,14 @@ if (window !== window.top) {
                 }
 
                 // Kiểm tra thông báo hết lượt / đạt giới hạn Tinh Thạch từ popup thông báo trong game
-                const limitNotification = await runInPage(`
-                    const overlay = document.getElementById("confirm-overlay") || document.querySelector(".modal-alert, .modal-notify, .confirm-modal");
-                    if (overlay && !overlay.classList.contains("hidden")) {
-                        const txt = (overlay.textContent || "").toLowerCase();
-                        if ((txt.includes("đạt giới hạn") || txt.includes("hết lượt") || txt.includes("tối đa")) && (txt.includes("tinh thạch") || txt.includes("huyền tinh"))) {
-                            return true;
-                        }
+                let limitNotification = false;
+                const overlay = document.getElementById("confirm-overlay") || document.querySelector(".modal-alert, .modal-notify, .confirm-modal");
+                if (overlay && !overlay.classList.contains("hidden")) {
+                    const txt = (overlay.textContent || "").toLowerCase();
+                    if ((txt.includes("đạt giới hạn") || txt.includes("hết lượt") || txt.includes("tối đa")) && (txt.includes("tinh thạch") || txt.includes("huyền tinh"))) {
+                        limitNotification = true;
                     }
-                    return false;
-                `);
+                }
                 if (limitNotification) {
                     log("⚔️ Đã đạt giới hạn Tinh Thạch hôm nay (theo thông báo game). Dừng worker Mê Cung.", "success");
                     await markWorkerDone('meCung');
@@ -2693,50 +3359,41 @@ if (window !== window.top) {
                 }
 
                 // 4. Tự động tắt hộp thoại xác nhận khi có popups thông báo lỗi
-                await runInPage(`
-                    const confirmBtn = document.querySelector("#confirm-overlay .confirm-btn-ok");
-                    if (confirmBtn) {
-                        confirmBtn.click();
-                        return true;
-                    }
-                    return false;
-                `);
+                const confirmBtn = document.querySelector("#confirm-overlay .confirm-btn-ok");
+                if (confirmBtn) {
+                    confirmBtn.click();
+                }
 
                 if (screenState.inBattle) {
                     // Màn hình chiến đấu: Đảm bảo các cài đặt tự động chiến đấu luôn bật
-                    await runInPage(`
-                        // Tự động Tấn công
-                        const autoAttackTrack = document.getElementById("auto-attack-track");
-                        if (autoAttackTrack && !autoAttackTrack.classList.contains("on")) {
-                            if (typeof window.toggleAutoAttack === 'function') window.toggleAutoAttack();
-                        }
-                        
-                        // Chuyển ải tiếp theo khi qua ải
-                        const rewardModal = document.getElementById("modal-reward");
-                        if (rewardModal && !rewardModal.classList.contains("hidden")) {
-                            const nextBtn = document.getElementById("btn-next-stage");
-                            if (nextBtn && !nextBtn.disabled) {
-                                nextBtn.click();
-                            }
-                        }
+                    const autoAttackTrack = document.getElementById("auto-attack-track");
+                    if (autoAttackTrack && !autoAttackTrack.classList.contains("on")) {
+                        await callPageBridge('mcCall', { fn: 'toggleAutoAttack' });
+                    }
 
-                        // Tự động quay lại sảnh khi thất bại
-                        const failModal = document.getElementById("modal-fail");
-                        if (failModal && !failModal.classList.contains("hidden")) {
-                            if (typeof window.backToLobby === 'function') {
-                                window.backToLobby();
-                            }
+                    // Chuyển ải tiếp theo khi qua ải
+                    const rewardModal = document.getElementById("modal-reward");
+                    if (rewardModal && !rewardModal.classList.contains("hidden")) {
+                        const nextBtn = document.getElementById("btn-next-stage");
+                        if (nextBtn && !nextBtn.disabled) {
+                            nextBtn.click();
                         }
+                    }
 
-                        // Nhận thưởng Boss 5 và quay lại sảnh
-                        const b5RewardModal = document.getElementById("modal-b5-reward");
-                        if (b5RewardModal && !b5RewardModal.classList.contains("hidden")) {
-                            const backLobbyBtn = b5RewardModal.querySelector("button.btn-back-lobby");
-                            if (backLobbyBtn) {
-                                backLobbyBtn.click();
-                            }
+                    // Tự động quay lại sảnh khi thất bại
+                    const failModal = document.getElementById("modal-fail");
+                    if (failModal && !failModal.classList.contains("hidden")) {
+                        await callPageBridge('mcCall', { fn: 'backToLobby' });
+                    }
+
+                    // Nhận thưởng Boss 5 và quay lại sảnh
+                    const b5RewardModal = document.getElementById("modal-b5-reward");
+                    if (b5RewardModal && !b5RewardModal.classList.contains("hidden")) {
+                        const backLobbyBtn = b5RewardModal.querySelector("button.btn-back-lobby");
+                        if (backLobbyBtn) {
+                            backLobbyBtn.click();
                         }
-                    `);
+                    }
 
                     await sleep(4000);
                     continue;
@@ -2745,122 +3402,90 @@ if (window !== window.top) {
                 if (screenState.inRoom) {
                     failedRooms.clear(); // Xóa danh sách đen phòng khi đã vào phòng thành công
                     // Màn hình phòng chờ phó bản: Bật tất cả tính năng tự động phòng chờ
-                    await runInPage(`
-                        // Tự động Sẵn sàng
-                        const autoReadyTrack = document.getElementById("auto-ready-track");
-                        if (autoReadyTrack && !autoReadyTrack.classList.contains("on")) {
-                            if (typeof window.toggleAutoReady === 'function') window.toggleAutoReady();
-                        }
+                    const autoReadyTrack = document.getElementById("auto-ready-track");
+                    if (autoReadyTrack && !autoReadyTrack.classList.contains("on")) {
+                        await callPageBridge('mcCall', { fn: 'toggleAutoReady' });
+                    }
 
-                        // Tự động Chuyển ải
-                        const autoNextTrack = document.getElementById("auto-next-stage-track");
-                        if (autoNextTrack && !autoNextTrack.classList.contains("on")) {
-                            if (typeof window.toggleAutoNextStage === 'function') window.toggleAutoNextStage();
-                        }
+                    const autoNextTrack = document.getElementById("auto-next-stage-track");
+                    if (autoNextTrack && !autoNextTrack.classList.contains("on")) {
+                        await callPageBridge('mcCall', { fn: 'toggleAutoNextStage' });
+                    }
 
-                        // Tự động Mở Rương
-                        const autoOpenChestTrack = document.getElementById("auto-open-chest-track");
-                        if (autoOpenChestTrack && !autoOpenChestTrack.classList.contains("on")) {
-                            if (typeof window.toggleAutoOpenChest === 'function') window.toggleAutoOpenChest();
-                        }
-                    `);
+                    const autoOpenChestTrack = document.getElementById("auto-open-chest-track");
+                    if (autoOpenChestTrack && !autoOpenChestTrack.classList.contains("on")) {
+                        await callPageBridge('mcCall', { fn: 'toggleAutoOpenChest' });
+                    }
 
                     const minPlayers = CONFIG.mecungConfig.minPlayers || 5;
+                    const configRole = CONFIG.mecungConfig.role || 'member';
 
                     // Xử lý hành động trong phòng (Host hoặc Member)
-                    const roomAction = await runInPage(`
-                        const minPlayers = arg.minPlayers || 5;
-                        const configRole = arg.role || 'member';
+                    const roomBtnStart = document.getElementById("btn-start");
+                    const btnText = (roomBtnStart ? roomBtnStart.textContent : "").trim().toUpperCase();
 
-                        const btnStart = document.getElementById("btn-start");
-                        const btnText = (btnStart ? btnStart.textContent : "").trim().toUpperCase();
+                    let roomIsHost = btnText.includes("BẮT ĐẦU") || btnText.includes("START");
+                    if (!roomIsHost && mcGlobals?.isHostFromNe) {
+                        roomIsHost = true;
+                    }
+                    if (!roomIsHost && configRole === 'host' && !btnText.includes("SẴN SÀNG")) {
+                        roomIsHost = true;
+                    }
 
-                        // Xác định vai trò: nút "BẮT ĐẦU" chỉ có ở Chủ phòng, nút "SẴN SÀNG" ở Thành viên
-                        let isHost = btnText.includes("BẮT ĐẦU") || btnText.includes("START");
-                        if (!isHost && typeof Ne === 'function') {
-                            try { isHost = Ne(); } catch (e) {}
-                        }
-                        if (!isHost && configRole === 'host' && !btnText.includes("SẴN SÀNG")) {
-                            isHost = true;
-                        }
+                    // Đếm số lượng người trong phòng chính xác
+                    const cards = document.querySelectorAll(".player-card, .room-player-card, [class*='player-card']");
+                    let filledCount = 0;
+                    if (cards.length > 0) {
+                        cards.forEach((card, idx) => {
+                            const isFilled = card.classList.contains("filled") || card.classList.contains("is-filled") || card.classList.contains("occupied");
+                            const isEmpty = card.classList.contains("empty") || card.classList.contains("slot-empty") || card.classList.contains("vacant");
+                            const hasName = !!card.querySelector(".player-name, .mc-player-name, .name, [data-user-id]");
+                            const hasAvatar = !!card.querySelector("img, .avatar:not(.empty-avatar)");
+                            const text = (card.textContent || "").trim().toLowerCase();
+                            const textEmpty = text === "" || text.includes("trống") || text === "+" || text.includes("chờ người") || text.includes("mời");
 
-                        // Đếm số lượng người trong phòng chính xác
-                        const cards = document.querySelectorAll(".player-card, .room-player-card, [class*='player-card']");
-                        let filledCount = 0;
-                        if (cards.length > 0) {
-                            cards.forEach((card, idx) => {
-                                const isFilled = card.classList.contains("filled") || card.classList.contains("is-filled") || card.classList.contains("occupied");
-                                const isEmpty = card.classList.contains("empty") || card.classList.contains("slot-empty") || card.classList.contains("vacant");
-                                const hasName = !!card.querySelector(".player-name, .mc-player-name, .name, [data-user-id]");
-                                const hasAvatar = !!card.querySelector("img, .avatar:not(.empty-avatar)");
-                                const text = (card.textContent || "").trim().toLowerCase();
-                                const textEmpty = text === "" || text.includes("trống") || text === "+" || text.includes("chờ người") || text.includes("mời");
-
-                                if (isFilled) {
-                                    filledCount++;
-                                } else if (!isEmpty && (hasName || hasAvatar || (!textEmpty && text.length > 0))) {
-                                    filledCount++;
-                                } else if (idx === 0 && !isEmpty) {
-                                    // Thẻ vị trí số 1 luôn là chủ phòng
-                                    filledCount++;
-                                }
-                            });
-                        }
-                        if (filledCount === 0) {
-                            filledCount = document.querySelectorAll(".player-card.filled").length;
-                            if (filledCount === 0) filledCount = 1;
-                        }
-
-                        if (isHost) {
-                            // CHỦ PHÒNG (HOST)
-                            // Kiểm tra xem nút bắt đầu có bị khóa không (do có thành viên chưa sẵn sàng)
-                            const isBlocked = btnStart && (
-                                btnStart.classList.contains("blocked-start") || 
-                                btnStart.disabled || 
-                                btnStart.classList.contains("disabled")
-                            );
-
-                            // Điều kiện bắt đầu:
-                            // 1. Số người trong phòng >= số người tối thiểu đã chọn (minPlayers)
-                            // 2. Nút bắt đầu không bị khóa (tất cả thành viên đã sẵn sàng)
-                            if (btnStart && filledCount >= minPlayers && !isBlocked) {
-                                btnStart.click();
-                                // Tự động xác nhận nếu game hiện popup hỏi khi bắt đầu phòng chưa đủ 5 người
-                                setTimeout(() => {
-                                    const confirmBtn = document.querySelector("#confirm-overlay .confirm-btn-ok, .modal-confirm .btn-ok, #confirm-overlay .btn-confirm");
-                                    if (confirmBtn) confirmBtn.click();
-                                }, 500);
-
-                                return { 
-                                    isHost: true, 
-                                    action: 'started', 
-                                    count: filledCount, 
-                                    minPlayers: minPlayers 
-                                };
+                            if (isFilled) {
+                                filledCount++;
+                            } else if (!isEmpty && (hasName || hasAvatar || (!textEmpty && text.length > 0))) {
+                                filledCount++;
+                            } else if (idx === 0 && !isEmpty) {
+                                // Thẻ vị trí số 1 luôn là chủ phòng
+                                filledCount++;
                             }
+                        });
+                    }
+                    if (filledCount === 0) {
+                        filledCount = document.querySelectorAll(".player-card.filled").length;
+                        if (filledCount === 0) filledCount = 1;
+                    }
 
-                            return { 
-                                isHost: true, 
-                                action: 'waiting', 
-                                count: filledCount, 
-                                minPlayers: minPlayers, 
-                                isBlocked: isBlocked 
-                            };
+                    let roomAction = null;
+                    if (roomIsHost) {
+                        const isBlocked = !!(roomBtnStart && (
+                            roomBtnStart.classList.contains("blocked-start") ||
+                            roomBtnStart.disabled ||
+                            roomBtnStart.classList.contains("disabled")
+                        ));
+
+                        if (roomBtnStart && filledCount >= minPlayers && !isBlocked) {
+                            roomBtnStart.click();
+                            setTimeout(() => {
+                                if (!isRunning || currentSessionId !== mySessionId) return;
+                                const confirmOk = document.querySelector("#confirm-overlay .confirm-btn-ok, .modal-confirm .btn-ok, #confirm-overlay .btn-confirm");
+                                if (confirmOk) confirmOk.click();
+                            }, 500);
+                            roomAction = { isHost: true, action: 'started', count: filledCount, minPlayers: minPlayers };
                         } else {
-                            // THÀNH VIÊN (MEMBER)
-                            let readied = false;
-                            if (btnStart && btnStart.textContent.includes("SẴN SÀNG") && !btnStart.textContent.includes("HỦY")) {
-                                btnStart.click();
-                                readied = true;
-                            }
-                            return { 
-                                isHost: false, 
-                                action: readied ? 'readied' : 'waiting_host', 
-                                count: filledCount, 
-                                minPlayers: minPlayers 
-                            };
+                            roomAction = { isHost: true, action: 'waiting', count: filledCount, minPlayers: minPlayers, isBlocked: isBlocked };
                         }
-                    `, { minPlayers: minPlayers, role: CONFIG.mecungConfig.role });
+                    } else {
+                        let readied = false;
+                        if (roomBtnStart && roomBtnStart.textContent.includes("SẴN SÀNG") && !roomBtnStart.textContent.includes("HỦY")) {
+                            roomBtnStart.click();
+                            readied = true;
+                        }
+                        roomAction = { isHost: false, action: readied ? 'readied' : 'waiting_host', count: filledCount, minPlayers: minPlayers };
+                    }
 
                     if (roomAction) {
                         if (roomAction.isHost) {
@@ -2897,45 +3522,35 @@ if (window !== window.top) {
                     }
                     const blacklistArray = Array.from(failedRooms.keys());
 
-                    const lobbyAction = await runInPage(`
-                        const role = arg.role;
-                        const blacklist = arg.blacklist || [];
+                    const availableJoinBtns = Array.from(document.querySelectorAll(".btn-join-room:not(.disabled)")).filter(btn => {
+                        const onclickAttr = btn.getAttribute('onclick') || '';
+                        const firstQuote = onclickAttr.indexOf("'");
+                        const secondQuote = onclickAttr.indexOf("'", firstQuote + 1);
+                        const code = (firstQuote !== -1 && secondQuote !== -1) ? onclickAttr.substring(firstQuote + 1, secondQuote) : '';
+                        return code && !blacklistArray.includes(code);
+                    });
 
-                        const availableJoinBtns = Array.from(document.querySelectorAll(".btn-join-room:not(.disabled)")).filter(btn => {
-                            const onclickAttr = btn.getAttribute('onclick') || '';
-                            const firstQuote = onclickAttr.indexOf("'");
-                            const secondQuote = onclickAttr.indexOf("'", firstQuote + 1);
-                            const code = (firstQuote !== -1 && secondQuote !== -1) ? onclickAttr.substring(firstQuote + 1, secondQuote) : '';
-                            return code && !blacklist.includes(code);
-                        });
+                    let lobbyAction = { action: 'none', success: false };
+                    if (role !== 'host' && availableJoinBtns.length > 0) {
+                        const btn = availableJoinBtns[0];
+                        const onclickAttr = btn.getAttribute('onclick') || '';
+                        const firstQuote = onclickAttr.indexOf("'");
+                        const secondQuote = onclickAttr.indexOf("'", firstQuote + 1);
+                        const roomCode = (firstQuote !== -1 && secondQuote !== -1) ? onclickAttr.substring(firstQuote + 1, secondQuote) : 'unknown';
 
-                        if (role !== 'host' && availableJoinBtns.length > 0) {
-                            const btn = availableJoinBtns[0];
-                            const onclickAttr = btn.getAttribute('onclick') || '';
-                            const firstQuote = onclickAttr.indexOf("'");
-                            const secondQuote = onclickAttr.indexOf("'", firstQuote + 1);
-                            const roomCode = (firstQuote !== -1 && secondQuote !== -1) ? onclickAttr.substring(firstQuote + 1, secondQuote) : 'unknown';
-
-                            btn.click();
-                            return { action: 'join', success: true, roomCode: roomCode };
-                        }
-
-                        if (role === 'member') {
-                            if (typeof window.manualRefreshLobby === 'function') {
-                                window.manualRefreshLobby();
-                            }
-                            return { action: 'refresh', success: true };
-                        }
-
+                        btn.click();
+                        lobbyAction = { action: 'join', success: true, roomCode: roomCode };
+                    } else if (role === 'member') {
+                        await callPageBridge('mcCall', { fn: 'manualRefreshLobby' });
+                        lobbyAction = { action: 'refresh', success: true };
+                    } else {
                         // Tạo phòng (áp dụng cho role 'host' hoặc 'auto' khi không tìm thấy phòng công khai)
                         const createBtn = document.querySelector(".btn-create-room") || document.querySelector('button[onclick="createRoom()"]');
                         if (createBtn) {
                             createBtn.click();
-                            return { action: 'create', success: true };
+                            lobbyAction = { action: 'create', success: true };
                         }
-
-                        return { action: 'none', success: false };
-                    `, { role: role, blacklist: blacklistArray });
+                    }
 
                     if (lobbyAction) {
                         if (lobbyAction.action === 'join' && lobbyAction.success) {
@@ -2957,14 +3572,10 @@ if (window !== window.top) {
                             log("🏰 Đang tạo phòng Mê Cung mới...", "info");
                             await sleep(1500); // Đợi modal tạo phòng hiển thị
                             // Bấm OK xác nhận tạo phòng
-                            await runInPage(`
-                                const confirmBtn = document.querySelector("#confirm-overlay .confirm-btn-ok");
-                                if (confirmBtn) {
-                                    confirmBtn.click();
-                                    return true;
-                                }
-                                return false;
-                            `);
+                            const confirmCreateBtn = document.querySelector("#confirm-overlay .confirm-btn-ok");
+                            if (confirmCreateBtn) {
+                                confirmCreateBtn.click();
+                            }
                             await sleep(3000);
                         } else if (lobbyAction.action === 'refresh') {
                             log("🏰 Sảnh không có phòng công khai. Đang làm mới danh sách sảnh...", "info");
@@ -3009,9 +3620,17 @@ if (window !== window.top) {
                     if (isRunning) {
                         log("🔄 Workers already running, restarting...", "info");
                         isRunning = false;
-                        await sleep(1000); // Allow old loops to see isRunning=false
+                        if (sessionAbortController) sessionAbortController.abort();
+                        if (spinWakeController && !spinWakeController.signal.aborted) {
+                            spinWakeController.abort();
+                            spinWakeController = null;
+                        }
+                        clearPendingQueue();
+                        await sleep(1000, null); // Allow old loops to see isRunning=false
                     }
 
+                    clearPendingQueue();
+                    sessionAbortController = new AbortController();
                     currentSessionId++; // New session
                     const mySessionId = currentSessionId;
                     isRunning = true;
@@ -3036,18 +3655,28 @@ if (window !== window.top) {
                     }
 
                     const activeWorkers = [];
+                    let skippedBossTongMonDone = false;
+                    let skippedChestDone = false;
                     for (const name of message.workers) {
                         // Vòng quay (spin) có thể nhận thêm lượt trong ngày (từ Mốc 2), nên không bỏ qua khi startup
                         if (name !== 'spin' && await isWorkerDone(name)) {
                             const vnNames = { chest: 'Rương', boss: 'Boss HV', bossTongMon: 'Boss TM', spin: 'Quay', tltm: 'TLTM', vanDap: 'Vấn Đáp', teLe: 'Tế Lễ', dailyReward: 'Daily', mining: 'Đào Mỏ', luyenDan: 'Luyện Đan', meCung: 'Mê Cung' };
                             log(`ℹ️ ${vnNames[name] || name} đã xong hôm nay. Bỏ qua.`, 'success');
+                            if (name === 'bossTongMon') skippedBossTongMonDone = true;
+                            if (name === 'chest') skippedChestDone = true;
                             continue;
                         }
                         activeWorkers.push(name);
                     }
 
                     await fetchNonces(activeWorkers);
-                    await dailyCheckIn();
+                    await dailyCheckIn(mySessionId);
+                    if (skippedBossTongMonDone) {
+                        await checkAndClaimBossTongMonReward().catch(() => { });
+                    }
+                    if (skippedChestDone) {
+                        await checkAndClaimPhucLoiMilestones().catch(() => { });
+                    }
 
                     const workerMap = {
                         chest: runChestWorker,
@@ -3085,6 +3714,15 @@ if (window !== window.top) {
 
                 case 'STOP':
                     isRunning = false;
+                    if (sessionAbortController) {
+                        sessionAbortController.abort();
+                        sessionAbortController = null;
+                    }
+                    if (spinWakeController && !spinWakeController.signal.aborted) {
+                        spinWakeController.abort();
+                        spinWakeController = null;
+                    }
+                    clearPendingQueue();
                     activeWorkerNames = [];
                     savedMiningConfig = null;
                     savedMecungConfig = null;
@@ -3137,10 +3775,10 @@ if (window !== window.top) {
                         }
                         const mineType = message.mineType || 'silver';
                         const result = await postForm(CONFIG.endpoints.api, {
-                            action: 'load_mines_by_type',
+                            action: CONFIG.nonces.kmListAct || 'load_mines_by_type',
                             mine_type: mineType,
                             security: CONFIG.nonces.mining
-                        });
+                        }, { allowWhenStopped: true });
                         if (result?.success && result?.data) {
                             sendResponse({ success: true, mines: result.data });
                         } else {

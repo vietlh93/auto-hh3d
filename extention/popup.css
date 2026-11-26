@@ -6,8 +6,8 @@
     --bg-card: rgba(30, 30, 50, 0.8);
 
     --text-primary: #ffffff;
-    --text-secondary: #a0a0b0;
-    --text-muted: #6b6b80;
+    --text-secondary: #b4b4c7;
+    --text-muted: #8b8ba3;
 
     --accent-primary: #7c3aed;
     --accent-secondary: #a855f7;
@@ -61,7 +61,8 @@ body {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 12px 16px;
+    gap: 12px;
+    padding: 10px 14px;
     background: var(--bg-card);
     border-radius: var(--radius-lg);
     border: 1px solid var(--border-color);
@@ -72,10 +73,19 @@ body {
     display: flex;
     align-items: center;
     gap: 10px;
+    min-width: 0;
+}
+
+.logo-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
 }
 
 .logo-icon {
-    font-size: 28px;
+    font-size: 24px;
+    flex-shrink: 0;
     animation: float 3s ease-in-out infinite;
 }
 
@@ -87,13 +97,14 @@ body {
     }
 
     50% {
-        transform: translateY(-5px);
+        transform: translateY(-4px);
     }
 }
 
 .logo h1 {
-    font-size: 18px;
+    font-size: 16px;
     font-weight: 700;
+    line-height: 1.2;
     background: var(--accent-gradient);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
@@ -104,12 +115,13 @@ body {
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 6px 12px;
+    padding: 5px 10px;
     background: rgba(239, 68, 68, 0.15);
     border: 1px solid rgba(239, 68, 68, 0.3);
     border-radius: 20px;
-    font-size: 12px;
-    font-weight: 500;
+    font-size: 11px;
+    font-weight: 600;
+    flex-shrink: 0;
     transition: var(--transition);
 }
 
@@ -153,17 +165,18 @@ body {
 
 /* ============= Domain Indicator ============= */
 .domain-indicator {
-    display: flex;
+    display: inline-flex;
     align-items: center;
     gap: 4px;
-    padding: 4px 10px;
-    background: rgba(107, 107, 128, 0.15);
-    border: 1px solid rgba(107, 107, 128, 0.2);
-    border-radius: 16px;
+    padding: 2px 8px;
+    width: fit-content;
+    background: rgba(139, 139, 163, 0.14);
+    border: 1px solid rgba(139, 139, 163, 0.22);
+    border-radius: 12px;
     font-size: 10px;
     color: var(--text-muted);
     transition: var(--transition);
-    max-width: 200px;
+    max-width: 100%;
     overflow: hidden;
 }
 
@@ -194,15 +207,15 @@ body {
 
 .left-column {
     flex: 1;
-    min-width: 380px;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     gap: 14px;
 }
 
 .right-column {
-    width: 340px;
-    min-width: 340px;
+    width: 320px;
+    min-width: 300px;
     display: flex;
     flex-direction: column;
     gap: 14px;
@@ -231,6 +244,33 @@ body {
 }
 
 /* ============= Workers Section ============= */
+.workers-section .section-header {
+    flex-wrap: wrap;
+}
+
+.worker-count {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: rgba(124, 58, 237, 0.18);
+    border: 1px solid rgba(124, 58, 237, 0.35);
+    color: #d8b4fe;
+}
+
+.btn-reset-daily {
+    padding: 3px 8px;
+    font-size: 10.5px;
+    border: 1px solid rgba(245, 158, 11, 0.35);
+    background: rgba(245, 158, 11, 0.12);
+    color: #fbbf24;
+}
+
+.btn-reset-daily:hover:not(:disabled) {
+    background: rgba(245, 158, 11, 0.22);
+    color: #fde68a;
+}
+
 .toggle-all {
     margin-left: auto;
     display: flex;
@@ -259,19 +299,33 @@ body {
     align-items: center;
     gap: 6px;
     padding: 8px 10px;
-    background: var(--bg-tertiary);
+    background: rgba(37, 37, 64, 0.6);
     border-radius: var(--radius-md);
     cursor: pointer;
     transition: var(--transition);
-    border: 1px solid transparent;
+    border: 1px solid rgba(255, 255, 255, 0.05);
     overflow: hidden;
     min-width: 0;
+    opacity: 0.72;
 }
 
 .worker-item:hover {
     background: var(--bg-secondary);
     border-color: var(--border-color);
     transform: translateY(-1px);
+    opacity: 0.95;
+}
+
+.worker-item:has(input:checked) {
+    background: linear-gradient(135deg, rgba(124, 58, 237, 0.22), rgba(168, 85, 247, 0.14));
+    border-color: rgba(168, 85, 247, 0.55);
+    box-shadow: 0 2px 10px rgba(124, 58, 237, 0.18);
+    opacity: 1;
+}
+
+.worker-item:has(input:checked) .worker-name {
+    color: var(--text-primary);
+    font-weight: 600;
 }
 
 .worker-item input {
@@ -303,7 +357,7 @@ body {
 }
 
 .worker-name {
-    font-size: 10px;
+    font-size: 11.5px;
     font-weight: 500;
     color: var(--text-secondary);
     flex: 1;
@@ -313,13 +367,25 @@ body {
     text-overflow: ellipsis;
 }
 
-/* ============= Mining Config Section ============= */
+/* ============= Config Sections ============= */
 .mining-section {
     border: 1px solid rgba(245, 158, 11, 0.3);
     background: rgba(245, 158, 11, 0.05);
 }
 
-.mining-config {
+.mecung-section {
+    border: 1px solid rgba(124, 58, 237, 0.3);
+    background: rgba(124, 58, 237, 0.05);
+}
+
+.luyen-dan-section {
+    border: 1px solid rgba(16, 185, 129, 0.3);
+    background: rgba(16, 185, 129, 0.05);
+}
+
+.mining-config,
+.mecung-config,
+.luyen-dan-config {
     display: flex;
     flex-direction: column;
     gap: 10px;
@@ -336,6 +402,31 @@ body {
     color: var(--text-secondary);
     min-width: 55px;
     flex-shrink: 0;
+}
+
+.config-row-wide label {
+    min-width: 96px;
+}
+
+.config-row-checkbox {
+    justify-content: flex-start;
+    gap: 8px;
+}
+
+.config-row-checkbox input[type="checkbox"] {
+    flex: 0 0 auto;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    margin: 0;
+    accent-color: var(--accent-primary);
+    cursor: pointer;
+}
+
+.config-row-checkbox label {
+    min-width: 0;
+    cursor: pointer;
+    user-select: none;
 }
 
 .config-row select,
@@ -391,9 +482,14 @@ body {
 
 /* ============= Controls Section ============= */
 .controls-section {
+    position: sticky;
+    top: 8px;
+    z-index: 10;
     display: flex;
     gap: 10px;
-    padding: 14px;
+    padding: 10px 12px;
+    background: rgba(24, 24, 44, 0.92);
+    box-shadow: 0 10px 26px rgba(0, 0, 0, 0.28);
 }
 
 /* ============= Buttons ============= */
@@ -468,8 +564,8 @@ body {
 
 .btn-large {
     flex: 1;
-    padding: 14px 20px;
-    font-size: 14px;
+    padding: 11px 16px;
+    font-size: 13px;
 }
 
 /* ============= Log Section ============= */
@@ -479,13 +575,51 @@ body {
     flex-direction: column;
 }
 
-.log-section .section-header .btn-small {
+.log-header {
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.log-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.log-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
     margin-left: auto;
 }
 
+.log-filters,
+.log-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.filter-chip {
+    border: 1px solid transparent;
+}
+
+.filter-chip.active {
+    background: rgba(124, 58, 237, 0.28);
+    border-color: rgba(168, 85, 247, 0.55);
+    color: var(--text-primary);
+}
+
+.log-entry.hidden-by-filter {
+    display: none;
+}
+
 .log-container {
-    height: 300px;
-    max-height: 300px;
+    min-height: 240px;
+    height: 320px;
+    max-height: 55vh;
     overflow-y: auto;
     overflow-x: hidden;
     background: var(--bg-primary);
@@ -599,7 +733,7 @@ body {
 }
 
 /* ============= Side Panel Responsive Layout ============= */
-@media (max-width: 620px) {
+@media (max-width: 760px) {
     body {
         width: 100vw;
         min-width: 0;
@@ -608,43 +742,32 @@ body {
 
     .container {
         padding: 12px;
-    }
-
-    .header {
-        flex-wrap: wrap;
-        justify-content: flex-start;
         gap: 10px;
     }
 
-    .logo {
-        flex: 1 1 100%;
+    .header {
+        padding: 10px 12px;
     }
 
     .main-content {
         flex-direction: column;
+        gap: 10px;
     }
 
     .left-column,
     .right-column {
         width: 100%;
         min-width: 0;
+        gap: 10px;
     }
 
     .workers-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
-    .controls-section {
-        position: sticky;
-        top: 8px;
-        z-index: 5;
-        background: rgba(26, 26, 46, 0.9);
-        box-shadow: 0 18px 40px rgba(0, 0, 0, 0.28);
-    }
-
     .log-container {
         height: 260px;
-        max-height: 42vh;
+        max-height: 44vh;
     }
 }
 

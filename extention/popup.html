@@ -14,16 +14,30 @@
         <div class="header">
             <div class="logo">
                 <span class="logo-icon">🐉</span>
-                <h1>HH3D Auto Tool</h1>
+                <div class="logo-meta">
+                    <h1>HH3D Auto Tool</h1>
+                    <div class="domain-indicator" id="domainIndicator" title="Domain tự động phát hiện">
+                        <span class="domain-icon">🌐</span>
+                        <span class="domain-text" id="domainText">Đang tìm...</span>
+                    </div>
+                </div>
             </div>
             <div class="status-badge" id="statusBadge">
                 <span class="status-dot"></span>
                 <span class="status-text">Đang dừng</span>
             </div>
-            <div class="domain-indicator" id="domainIndicator" title="Domain tự động phát hiện">
-                <span class="domain-icon">🌐</span>
-                <span class="domain-text" id="domainText">Đang tìm...</span>
-            </div>
+        </div>
+
+        <!-- Control Buttons -->
+        <div class="section controls-section">
+            <button class="btn btn-primary btn-large" id="startBtn">
+                <span class="btn-icon">▶️</span>
+                Bắt đầu
+            </button>
+            <button class="btn btn-danger btn-large" id="stopBtn" disabled>
+                <span class="btn-icon">⏹️</span>
+                Dừng lại
+            </button>
         </div>
 
         <!-- Main Content - 2 Columns -->
@@ -35,8 +49,10 @@
                     <div class="section-header">
                         <span class="section-icon">⚙️</span>
                         <span>Workers</span>
+                        <span class="worker-count" id="workerCount">8/11</span>
+                        <button type="button" class="btn btn-small btn-reset-daily" id="resetDailyBtn" title="Đưa toàn bộ worker về trạng thái chưa hoàn thành hôm nay">🔄 Reset</button>
                         <label class="toggle-all">
-                            <input type="checkbox" id="toggleAll" checked>
+                            <input type="checkbox" id="toggleAll">
                             <span>Tất cả</span>
                         </label>
                     </div>
@@ -112,7 +128,7 @@
                 </div>
 
                 <!-- Mining Config -->
-                <div class="section mining-section" id="miningSection">
+                <div class="section mining-section" id="miningSection" style="display: none;">
                     <div class="section-header">
                         <span class="section-icon">⛏️</span>
                         <span>Cấu hình Khoáng Mạch</span>
@@ -140,15 +156,15 @@
                 </div>
 
                 <!-- Me Cung Config -->
-                <div class="section mecung-section" id="mecungSection" style="border: 1px solid rgba(124, 58, 237, 0.3); background: rgba(124, 58, 237, 0.05);">
+                <div class="section mecung-section" id="mecungSection" style="display: none;">
                     <div class="section-header">
                         <span class="section-icon">⚔️</span>
                         <span>Cấu hình Mê Cung</span>
                     </div>
-                    <div class="mecung-config" style="display: flex; flex-direction: column; gap: 10px;">
-                        <div class="config-row">
-                            <label style="font-size: 12px; color: var(--text-secondary); min-width: 90px; flex-shrink: 0;">Số người min:</label>
-                            <select id="mcMinPlayers" style="flex: 1; padding: 8px 12px; background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--text-primary); font-size: 12px; outline: none;">
+                    <div class="mecung-config">
+                        <div class="config-row config-row-wide">
+                            <label>Số người min:</label>
+                            <select id="mcMinPlayers">
                                 <option value="1">1 Người (Solo)</option>
                                 <option value="2">2 Người</option>
                                 <option value="3">3 Người</option>
@@ -156,30 +172,30 @@
                                 <option value="5" selected>5 Người (Tối đa)</option>
                             </select>
                         </div>
-                        <div class="config-row">
-                            <label style="font-size: 12px; color: var(--text-secondary); min-width: 90px; flex-shrink: 0;">Vai trò:</label>
-                            <select id="mcRole" style="flex: 1; padding: 8px 12px; background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--text-primary); font-size: 12px; outline: none;">
+                        <div class="config-row config-row-wide">
+                            <label>Vai trò:</label>
+                            <select id="mcRole">
                                 <option value="host">Chủ Phòng (Chỉ Lập phòng)</option>
                                 <option value="member" selected>Thành Viên (Chỉ Vào phòng)</option>
                             </select>
                         </div>
-                        <div class="config-row">
-                            <label style="font-size: 12px; color: var(--text-secondary); min-width: 90px; flex-shrink: 0;">Max Tinh Thạch:</label>
-                            <input type="number" id="mcMaxCap" placeholder="Tự nhận diện (VIP)" style="flex: 1; padding: 8px 12px; background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--text-primary); font-size: 12px; outline: none;" min="100" max="2000" step="50">
+                        <div class="config-row config-row-wide">
+                            <label>Max Tinh Thạch:</label>
+                            <input type="number" id="mcMaxCap" placeholder="Tự nhận diện (VIP)" min="100" max="2000" step="50">
                         </div>
                     </div>
                 </div>
 
                 <!-- Luyen Dan Config -->
-                <div class="section luyen-dan-section" id="luyenDanSection" style="border: 1px solid rgba(16, 185, 129, 0.3); background: rgba(16, 185, 129, 0.05); display: none;">
+                <div class="section luyen-dan-section" id="luyenDanSection" style="display: none;">
                     <div class="section-header">
                         <span class="section-icon">🧪</span>
                         <span>Cấu hình Luyện Đan</span>
                     </div>
-                    <div class="luyen-dan-config" style="display: flex; flex-direction: column; gap: 10px;">
-                        <div class="config-row">
-                            <label style="font-size: 12px; color: var(--text-secondary); min-width: 90px; flex-shrink: 0;">Luyện phẩm:</label>
-                            <select id="ldTargetTier" style="flex: 1; padding: 8px 12px; background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--text-primary); font-size: 12px; outline: none;">
+                    <div class="luyen-dan-config">
+                        <div class="config-row config-row-wide">
+                            <label>Luyện phẩm:</label>
+                            <select id="ldTargetTier">
                                 <option value="auto" selected>Tự động chọn cao nhất</option>
                                 <option value="cuc">Cực Phẩm</option>
                                 <option value="thuong">Thượng Phẩm</option>
@@ -187,22 +203,22 @@
                                 <option value="ha">Hạ Phẩm</option>
                             </select>
                         </div>
-                        <div class="config-row" style="align-items: center; justify-content: flex-start; gap: 8px;">
-                            <input type="checkbox" id="ldAutoDecompose" style="margin: 0; width: 16px; height: 16px; cursor: pointer;">
-                            <label for="ldAutoDecompose" style="font-size: 12px; color: var(--text-secondary); cursor: pointer; user-select: none;">Tự phân giải khi túi đầy</label>
+                        <div class="config-row config-row-checkbox">
+                            <input type="checkbox" id="ldAutoDecompose">
+                            <label for="ldAutoDecompose">Tự phân giải khi túi đầy</label>
                         </div>
-                        <div class="config-row" id="ldDecomposeTierRow" style="display: none;">
-                            <label style="font-size: 12px; color: var(--text-secondary); min-width: 90px; flex-shrink: 0;">Phẩm phân giải:</label>
-                            <select id="ldDecomposeTier" style="flex: 1; padding: 8px 12px; background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--text-primary); font-size: 12px; outline: none;">
+                        <div class="config-row config-row-wide" id="ldDecomposeTierRow" style="display: none;">
+                            <label>Phẩm phân giải:</label>
+                            <select id="ldDecomposeTier">
                                 <option value="ha" selected>Hạ Phẩm</option>
                                 <option value="trung">Trung Phẩm</option>
                                 <option value="thuong">Thượng Phẩm</option>
                                 <option value="cuc">Cực Phẩm</option>
                             </select>
                         </div>
-                        <div class="config-row" id="ldDecomposeStarsRow" style="display: none;">
-                            <label style="font-size: 12px; color: var(--text-secondary); min-width: 90px; flex-shrink: 0;">Sao phân giải:</label>
-                            <select id="ldDecomposeStars" style="flex: 1; padding: 8px 12px; background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--text-primary); font-size: 12px; outline: none;">
+                        <div class="config-row config-row-wide" id="ldDecomposeStarsRow" style="display: none;">
+                            <label>Sao phân giải:</label>
+                            <select id="ldDecomposeStars">
                                 <option value="1-2" selected>1★ và 2★</option>
                                 <option value="1">Chỉ 1★</option>
                                 <option value="2">Chỉ 2★</option>
@@ -217,24 +233,24 @@
 
             <!-- Right Column -->
             <div class="right-column">
-                <!-- Control Buttons -->
-                <div class="section controls-section">
-                    <button class="btn btn-primary btn-large" id="startBtn">
-                        <span class="btn-icon">▶️</span>
-                        Bắt đầu
-                    </button>
-                    <button class="btn btn-danger btn-large" id="stopBtn" disabled>
-                        <span class="btn-icon">⏹️</span>
-                        Dừng lại
-                    </button>
-                </div>
-
                 <!-- Log Section -->
                 <div class="section log-section">
-                    <div class="section-header">
-                        <span class="section-icon">📋</span>
-                        <span>Logs</span>
-                        <button class="btn btn-small" id="clearLogBtn">Xóa</button>
+                    <div class="section-header log-header">
+                        <div class="log-title">
+                            <span class="section-icon">📋</span>
+                            <span>Logs</span>
+                        </div>
+                        <div class="log-toolbar">
+                            <div class="log-filters">
+                                <button type="button" class="btn btn-small filter-chip active" data-log-filter="all">Tất cả</button>
+                                <button type="button" class="btn btn-small filter-chip" data-log-filter="error">Lỗi</button>
+                                <button type="button" class="btn btn-small filter-chip" data-log-filter="success">OK</button>
+                            </div>
+                            <div class="log-actions">
+                                <button type="button" class="btn btn-small" id="copyLogBtn" title="Copy logs đang hiển thị">Copy</button>
+                                <button type="button" class="btn btn-small" id="clearLogBtn">Xóa</button>
+                            </div>
+                        </div>
                     </div>
                     <div class="log-container" id="logContainer">
                         <p class="log-empty">Chưa có log nào...</p>

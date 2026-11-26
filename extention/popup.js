@@ -1,10 +1,14 @@
 // ============= DOM Elements =============
 const statusBadge = document.getElementById('statusBadge');
 const toggleAll = document.getElementById('toggleAll');
+const workerCount = document.getElementById('workerCount');
+const resetDailyBtn = document.getElementById('resetDailyBtn');
 const workerCheckboxes = document.querySelectorAll('input[name="worker"]');
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
 const clearLogBtn = document.getElementById('clearLogBtn');
+const copyLogBtn = document.getElementById('copyLogBtn');
+const logFilterButtons = document.querySelectorAll('[data-log-filter]');
 const logContainer = document.getElementById('logContainer');
 const currentTime = document.getElementById('currentTime');
 const domainText = document.getElementById('domainText');
@@ -36,6 +40,7 @@ const luyenDanSection = document.getElementById('luyenDanSection');
 
 let isRunning = false;
 let minesData = []; // Store loaded mines
+let currentLogFilter = 'all';
 
 document.addEventListener('DOMContentLoaded', () => {
   loadState();
@@ -54,7 +59,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   chrome.runtime.onMessage.addListener((message) => {
-    if (message.type === 'LOG') addLog(message.data.message, message.data.level);
+    if (message.type === 'LOG') addLog(message.data.message, message.data.level, true, message.data.time);
     else if (message.type === 'STATUS_UPDATE') updateStatus(message.data.isRunning);
     else if (message.type === 'LOGS_CLEARED') {
       logContainer.innerHTML = '<p class="log-empty">Chưa có log nào...</p>';
@@ -62,13 +67,12 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   chrome.runtime.sendMessage({ type: 'GET_STATUS' }, (response) => {
-    if (response) {
-      updateStatus(response.isRunning);
-      if (response.logs) response.logs.forEach(log => addLog(log.message, log.level, false));
-      if (response.detectedDomain) {
-        domainText.textContent = response.detectedDomain;
-        domainText.parentElement.classList.add('detected');
-      }
+    if (chrome.runtime.lastError || !response) return;
+    updateStatus(response.isRunning);
+    if (response.logs) response.logs.forEach(log => addLog(log.message, log.level, false, log.time));
+    if (response.detectedDomain) {
+      domainText.textContent = response.detectedDomain;
+      domainText.parentElement.classList.add('detected');
     }
   });
 });
@@ -79,6 +83,12 @@ async function checkActiveTabAccess() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     const isHH3D = isHH3DTab(tab);
     setTabGuardVisible(!isHH3D, tab?.url);
+    if (isHH3D && tab?.url) {
+      try {
+        domainText.textContent = new URL(tab.url).hostname;
+        domainText.parentElement.classList.add('detected');
+      } catch (e) { }
+    }
   } catch (e) {
     setTabGuardVisible(true);
   }
@@ -118,6 +128,9 @@ function updateConfigSectionsVisibility() {
   const miningCb = Array.from(workerCheckboxes).find(cb => cb.value === 'mining');
   const meCungCb = Array.from(workerCheckboxes).find(cb => cb.value === 'meCung');
   const luyenDanCb = Array.from(workerCheckboxes).find(cb => cb.value === 'luyenDan');
+  const checkedCount = Array.from(workerCheckboxes).filter(c => c.checked).length;
+  toggleAll.checked = checkedCount === workerCheckboxes.length;
+  if (workerCount) workerCount.textContent = `${checkedCount}/${workerCheckboxes.length}`;
   if (miningSection) miningSection.style.display = (miningCb && miningCb.checked) ? 'block' : 'none';
   if (mecungSection) mecungSection.style.display = (meCungCb && meCungCb.checked) ? 'block' : 'none';
   if (luyenDanSection) luyenDanSection.style.display = (luyenDanCb && luyenDanCb.checked) ? 'block' : 'none';
@@ -146,10 +159,22 @@ mineTypeSelect.addEventListener('change', () => {
 
 mineSelect.addEventListener('change', saveState);
 
+let saveStateTimer = null;
+function debouncedSaveState() {
+  if (saveStateTimer) clearTimeout(saveStateTimer);
+  saveStateTimer = setTimeout(() => {
+    saveStateTimer = null;
+    saveState();
+  }, 300);
+}
+
 // Mê Cung config change handlers
 mcMinPlayersSelect.addEventListener('change', saveState);
 mcRoleSelect.addEventListener('change', saveState);
-if (mcMaxCapInput) mcMaxCapInput.addEventListener('change', saveState);
+if (mcMaxCapInput) {
+  mcMaxCapInput.addEventListener('change', saveState);
+  mcMaxCapInput.addEventListener('input', debouncedSaveState);
+}
 
 // Luyện Đan config change handlers
 ldTargetTierSelect.addEventListener('change', saveState);
@@ -174,14 +199,14 @@ checkMinesBtn.addEventListener('click', async () => {
       mineType: mineTypeSelect.value
     });
 
-    if (response.success && response.mines) {
+    if (response?.success && response.mines) {
       minesData = response.mines;
       populateMineSelect(response.mines);
       mineHint.textContent = `✅ Đã tải ${response.mines.length} mỏ`;
       saveState(); // Lưu danh sách mỏ
     } else {
-      mineHint.textContent = `❌ Lỗi: ${response.error || 'Không thể tải'}`;
-      addLog(`❌ Load mines failed: ${response.error}`, 'error');
+      mineHint.textContent = `❌ Lỗi: ${response?.error || 'Không thể tải'}`;
+      addLog(`❌ Load mines failed: ${response?.error || 'Không thể tải'}`, 'error');
     }
   } catch (e) {
     mineHint.textContent = `❌ Lỗi: ${e.message}`;
@@ -232,27 +257,101 @@ startBtn.addEventListener('click', async () => {
   };
 
   startBtn.disabled = true;
-  const response = await chrome.runtime.sendMessage({
-    type: 'START',
-    workers: selectedWorkers,
-    miningConfig: miningConfig,
-    mecungConfig: mecungConfig,
-    luyenDanConfig: luyenDanConfig
-  });
-  if (response.success) { updateStatus(true); }
-  else addLog(`❌ Lỗi: ${response.error}`, 'error');
-  startBtn.disabled = isRunning;
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: 'START',
+      workers: selectedWorkers,
+      miningConfig: miningConfig,
+      mecungConfig: mecungConfig,
+      luyenDanConfig: luyenDanConfig
+    });
+    if (response?.success) {
+      updateStatus(true);
+    } else {
+      addLog(`❌ Lỗi: ${response?.error || 'Không nhận được phản hồi từ background'}`, 'error');
+    }
+  } catch (e) {
+    addLog(`❌ Lỗi: ${e.message}`, 'error');
+  } finally {
+    startBtn.disabled = isRunning;
+  }
 });
 
 stopBtn.addEventListener('click', async () => {
-  await chrome.runtime.sendMessage({ type: 'STOP' });
-  updateStatus(false);
+  stopBtn.disabled = true;
+  try {
+    await chrome.runtime.sendMessage({ type: 'STOP' });
+    updateStatus(false);
+  } catch (e) {
+    addLog(`❌ Lỗi dừng: ${e.message}`, 'error');
+    stopBtn.disabled = !isRunning;
+  }
 });
 
 clearLogBtn.addEventListener('click', () => {
   logContainer.innerHTML = '<p class="log-empty">Chưa có log nào...</p>';
   chrome.runtime.sendMessage({ type: 'CLEAR_LOGS' });
 });
+
+if (resetDailyBtn) {
+  resetDailyBtn.addEventListener('click', async () => {
+    resetDailyBtn.disabled = true;
+    const prevText = resetDailyBtn.textContent;
+    try {
+      const response = await chrome.runtime.sendMessage({ type: 'RESET_DAILY' });
+      if (response?.success) {
+        resetDailyBtn.textContent = '✓ Đã reset';
+        setTimeout(() => { resetDailyBtn.textContent = prevText; }, 1500);
+      } else {
+        addLog(`❌ Reset ngày thất bại: ${response?.error || 'Lỗi không xác định'}`, 'error');
+      }
+    } catch (e) {
+      addLog(`❌ Reset ngày lỗi: ${e.message}`, 'error');
+    } finally {
+      resetDailyBtn.disabled = false;
+    }
+  });
+}
+
+function matchesLogFilter(level, filter = currentLogFilter) {
+  if (filter === 'all') return true;
+  if (filter === 'error') return level === 'error' || level === 'warning';
+  if (filter === 'success') return level === 'success';
+  return true;
+}
+
+function applyLogFilter() {
+  logContainer.querySelectorAll('.log-entry').forEach((entry) => {
+    const level = entry.dataset.level || 'info';
+    entry.classList.toggle('hidden-by-filter', !matchesLogFilter(level));
+  });
+}
+
+logFilterButtons.forEach((btn) => {
+  btn.addEventListener('click', () => {
+    currentLogFilter = btn.dataset.logFilter || 'all';
+    logFilterButtons.forEach((b) => b.classList.toggle('active', b === btn));
+    applyLogFilter();
+  });
+});
+
+if (copyLogBtn) {
+  copyLogBtn.addEventListener('click', async () => {
+    const visibleLines = Array.from(logContainer.querySelectorAll('.log-entry:not(.hidden-by-filter)'))
+      .map((el) => el.textContent.trim())
+      .filter(Boolean);
+    if (visibleLines.length === 0) return;
+
+    try {
+      await navigator.clipboard.writeText(visibleLines.join('\n'));
+      const prev = copyLogBtn.textContent;
+      copyLogBtn.textContent = '✓ Đã copy';
+      setTimeout(() => { copyLogBtn.textContent = prev; }, 1200);
+    } catch (e) {
+      addLog(`❌ Không thể copy log: ${e.message}`, 'error');
+    }
+  });
+}
 
 function updateStatus(running) {
   isRunning = running;
@@ -262,14 +361,25 @@ function updateStatus(running) {
   stopBtn.disabled = !running;
 }
 
-function addLog(message, level = 'info', scroll = true) {
+function addLog(message, level = 'info', scroll = true, timestamp = null) {
   const empty = logContainer.querySelector('.log-empty');
   if (empty) empty.remove();
 
-  const time = new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const dateObj = timestamp ? new Date(timestamp) : new Date();
+  const time = dateObj.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   const entry = document.createElement('div');
   entry.className = `log-entry ${level}`;
-  entry.innerHTML = `<span class="log-time">[${time}]</span>${message}`;
+  entry.dataset.level = level;
+  if (!matchesLogFilter(level)) {
+    entry.classList.add('hidden-by-filter');
+  }
+
+  const timeSpan = document.createElement('span');
+  timeSpan.className = 'log-time';
+  timeSpan.textContent = `[${time}]`;
+  entry.appendChild(timeSpan);
+  entry.appendChild(document.createTextNode(String(message ?? '')));
+
   logContainer.appendChild(entry);
   if (scroll) logContainer.scrollTop = logContainer.scrollHeight;
   while (logContainer.children.length > 100) logContainer.removeChild(logContainer.firstChild);

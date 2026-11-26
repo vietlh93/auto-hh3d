@@ -2,11 +2,14 @@
 // V5 - Auto-detect domain + dynamic content script injection
 
 const KEEP_ALIVE_ALARM = 'keep-alive-alarm';
-const KEEP_ALIVE_INTERVAL = 0.4; // 24 seconds (less than 30s timeout)
+const KEEP_ALIVE_INTERVAL = 0.5; // 30 seconds (Chrome MV3 minimum alarm period)
+const IDLE_ALARM_INTERVAL = 5; // 5 minutes when idle
 
 let isRunning = false;
+let activeTabId = null;
 let logs = [];
 let detectedDomain = null; // Tự động phát hiện domain hiện tại
+let saveStateTimer = null;
 
 // ============= DOMAIN AUTO-DETECTION =============
 // Kiểm tra URL có phải hoathinh3d hay không (bất kỳ TLD nào)
@@ -93,6 +96,10 @@ async function injectContentScript(tabId) {
 // Xóa tab khỏi injected set khi tab đóng
 chrome.tabs.onRemoved.addListener((tabId) => {
     injectedTabs.delete(tabId);
+    if (tabId === activeTabId) {
+        activeTabId = null;
+        scheduleSaveState();
+    }
 });
 
 // ============= SIDE PANEL UI =============
@@ -102,11 +109,11 @@ async function setupSidePanel(tab) {
     const enabled = isHH3DUrl(tab.url);
 
     try {
-        await chrome.sidePanel.setOptions({
-            tabId: tab.id,
-            path: enabled ? 'popup.html' : 'sidepanel-disabled.html',
-            enabled: true
-        });
+        await chrome.sidePanel.setOptions(
+            enabled
+                ? { tabId: tab.id, path: 'popup.html', enabled: true }
+                : { tabId: tab.id, enabled: false }
+        );
         return enabled;
     } catch (e) {
         console.warn('Side panel options setup failed:', e?.message || e);
@@ -126,6 +133,9 @@ async function syncSidePanelForTab(tabId) {
 }
 
 if (chrome.sidePanel) {
+    chrome.sidePanel.setOptions({ enabled: false }).catch((error) => {
+        console.warn('Side panel default disable failed:', error?.message || error);
+    });
     chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch((error) => {
         console.warn('Side panel behavior setup failed:', error?.message || error);
     });
@@ -158,12 +168,12 @@ chrome.tabs.onActivated.addListener((activeInfo) => {
 });
 
 // ============= KEEP-ALIVE MECHANISM =============
-async function setupKeepAlive() {
+async function setupKeepAlive(running = isRunning) {
     try {
         await chrome.alarms.create(KEEP_ALIVE_ALARM, {
-            periodInMinutes: KEEP_ALIVE_INTERVAL
+            periodInMinutes: running ? KEEP_ALIVE_INTERVAL : IDLE_ALARM_INTERVAL
         });
-        console.log('✅ Keep-alive alarm created');
+        console.log(`✅ Keep-alive alarm created (${running ? 'running' : 'idle'})`);
     } catch (e) {
         console.error('Failed to create keep-alive alarm:', e);
     }
@@ -214,12 +224,10 @@ async function checkAndResetNewDay() {
     }
 }
 
-chrome.alarms.onAlarm.addListener((alarm) => {
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+    await readyPromise;
     if (alarm.name === KEEP_ALIVE_ALARM) {
         console.log('⏰ Keep-alive ping at', new Date().toLocaleTimeString());
-        chrome.storage.local.get(['lastPing'], () => {
-            chrome.storage.local.set({ lastPing: Date.now() });
-        });
         checkAndResetNewDay();
     }
 });
@@ -227,14 +235,27 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 // ============= STATE PERSISTENCE =============
 async function saveState() {
+    if (saveStateTimer) {
+        clearTimeout(saveStateTimer);
+        saveStateTimer = null;
+    }
     try {
         await chrome.storage.local.set({
             isRunning: isRunning,
+            activeTabId: activeTabId,
             logs: logs.slice(-100)
         });
     } catch (e) {
         console.error('Failed to save state:', e);
     }
+}
+
+function scheduleSaveState() {
+    if (saveStateTimer) return;
+    saveStateTimer = setTimeout(() => {
+        saveStateTimer = null;
+        saveState();
+    }, 600);
 }
 
 async function saveWorkerConfig(workers, miningConfig, mecungConfig, luyenDanConfig) {
@@ -263,14 +284,17 @@ async function clearWorkerConfig() {
 
 async function loadState() {
     try {
-        const result = await chrome.storage.local.get(['isRunning', 'logs']);
+        const result = await chrome.storage.local.get(['isRunning', 'activeTabId', 'logs']);
         if (result.isRunning !== undefined) {
             isRunning = result.isRunning;
+        }
+        if (result.activeTabId !== undefined) {
+            activeTabId = result.activeTabId;
         }
         if (result.logs) {
             logs = result.logs;
         }
-        console.log('📦 State loaded: isRunning =', isRunning, ', logs count =', logs.length);
+        console.log('📦 State loaded: isRunning =', isRunning, ', activeTabId =', activeTabId, ', logs count =', logs.length);
     } catch (e) {
         console.error('Failed to load state:', e);
     }
@@ -281,7 +305,7 @@ function addLog(message, level = 'info') {
     const logEntry = { message, level, time: Date.now() };
     logs.push(logEntry);
     if (logs.length > 200) logs.shift();
-    saveState();
+    scheduleSaveState();
     chrome.runtime.sendMessage({ type: 'LOG', data: logEntry }).catch(() => { });
     console.log(`[${level}] ${message}`);
 }
@@ -290,6 +314,16 @@ function addLog(message, level = 'info') {
 async function findHH3DTabs() {
     const allTabs = await chrome.tabs.query({});
     return allTabs.filter(tab => tab.url && isHH3DUrl(tab.url));
+}
+
+// Prefer active HH3D tab in current window, then any active HH3D tab, then first HH3D tab
+async function findPreferredHH3DTab() {
+    const activeCurrent = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    const currentMatch = activeCurrent.find(tab => tab.url && isHH3DUrl(tab.url));
+    if (currentMatch) return currentMatch;
+
+    const tabs = await findHH3DTabs();
+    return tabs.find(tab => tab.active) || tabs[0] || null;
 }
 
 // Check if content script is ready
@@ -302,21 +336,39 @@ async function checkContentScript(tabId) {
     }
 }
 
-// Notify content script about running state
+// Notify content script about running state (single active tab only)
 async function notifyContentScriptState() {
     if (!isRunning) return;
 
     try {
-        const hh3dTabs = await findHH3DTabs();
-        for (const tab of hh3dTabs) {
-            try {
-                await chrome.tabs.sendMessage(tab.id, {
-                    type: 'STATE_SYNC',
-                    isRunning: isRunning
-                }, { frameId: 0 });
-            } catch (e) {
-                // Tab might not have content script ready
+        let targetTab = null;
+        if (activeTabId != null) {
+            const candidate = await chrome.tabs.get(activeTabId).catch(() => null);
+            if (candidate?.url && isHH3DUrl(candidate.url)) {
+                targetTab = candidate;
             }
+        }
+
+        if (!targetTab) {
+            targetTab = await findPreferredHH3DTab();
+            if (targetTab) {
+                activeTabId = targetTab.id;
+                await saveState();
+            } else if (activeTabId != null) {
+                activeTabId = null;
+                await saveState();
+            }
+        }
+
+        if (!targetTab) return;
+
+        try {
+            await chrome.tabs.sendMessage(targetTab.id, {
+                type: 'STATE_SYNC',
+                isRunning: isRunning
+            }, { frameId: 0 });
+        } catch (e) {
+            // Tab might not have content script ready
         }
     } catch (e) {
         console.error('Failed to notify content scripts:', e);
@@ -328,24 +380,37 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     console.log("Background received:", message.type);
 
     (async () => {
+        await readyPromise;
         switch (message.type) {
-            case 'LOG':
-                logs.push(message.data);
+            case 'LOG': {
+                const entry = {
+                    ...(message.data || {}),
+                    message: message.data?.message ?? '',
+                    level: message.data?.level || 'info',
+                    time: message.data?.time || Date.now()
+                };
+                logs.push(entry);
                 if (logs.length > 200) logs.shift();
-                saveState();
+                scheduleSaveState();
+                sendResponse({ success: true });
+                break;
+            }
+
+            case 'CONTENT_READY':
                 sendResponse({ success: true });
                 break;
 
-            case 'GET_STATUS':
+            case 'GET_STATUS': {
                 // Trả về cả domain đang phát hiện
-                const hh3dTabs = await findHH3DTabs();
-                const currentDomain = hh3dTabs.length > 0 ? new URL(hh3dTabs[0].url).hostname : detectedDomain;
+                const preferredTab = await findPreferredHH3DTab();
+                const currentDomain = preferredTab ? new URL(preferredTab.url).hostname : detectedDomain;
                 sendResponse({
                     isRunning,
                     logs: logs.slice(-50),
                     detectedDomain: currentDomain
                 });
                 break;
+            }
 
             case 'HEARTBEAT':
                 sendResponse({ alive: true, isRunning: isRunning });
@@ -353,18 +418,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
             case 'START':
                 try {
-                    const tabs = await findHH3DTabs();
+                    const targetTab = await findPreferredHH3DTab();
 
-                    if (tabs.length === 0) {
+                    if (!targetTab) {
                         addLog("❌ Hãy mở tab hoathinh3d trước!", "error");
                         sendResponse({ success: false, error: 'Hãy mở tab hoathinh3d trước!' });
                         return;
                     }
 
-                    const tabId = tabs[0].id;
+                    const tabId = targetTab.id;
 
                     // Lưu domain đã phát hiện
-                    const tabDomain = new URL(tabs[0].url).origin;
+                    const tabDomain = new URL(targetTab.url).origin;
                     await saveDetectedDomain(tabDomain);
                     addLog(`🌐 Domain phát hiện: ${tabDomain}`, "info");
 
@@ -403,8 +468,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
                         if (response?.success) {
                             isRunning = true;
+                            activeTabId = tabId;
                             await saveState();
+                            await setupKeepAlive(true);
                             await saveWorkerConfig(message.workers, message.miningConfig, message.mecungConfig, message.luyenDanConfig);
+                            const allHh3dTabs = await findHH3DTabs();
+                            for (const otherTab of allHh3dTabs) {
+                                if (otherTab.id !== tabId) {
+                                    chrome.tabs.sendMessage(otherTab.id, { type: 'STOP' }, { frameId: 0 }).catch(() => { });
+                                }
+                            }
                             chrome.runtime.sendMessage({ type: 'STATUS_UPDATE', data: { isRunning: true } }).catch(() => { });
                             sendResponse({ success: true });
                         } else {
@@ -424,11 +497,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             case 'STOP':
                 try {
                     const stopTabs = await findHH3DTabs();
-                    if (stopTabs.length > 0) {
-                        chrome.tabs.sendMessage(stopTabs[0].id, { type: 'STOP' }, { frameId: 0 }).catch(() => { });
+                    for (const tab of stopTabs) {
+                        chrome.tabs.sendMessage(tab.id, { type: 'STOP' }, { frameId: 0 }).catch(() => { });
                     }
                     isRunning = false;
+                    activeTabId = null;
                     await saveState();
+                    await setupKeepAlive(false);
                     await clearWorkerConfig();
                     chrome.runtime.sendMessage({ type: 'STATUS_UPDATE', data: { isRunning: false } }).catch(() => { });
                     sendResponse({ success: true });
@@ -448,6 +523,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
                 sendResponse({ success: true });
                 break;
 
+            case 'RESET_DAILY':
+                try {
+                    await chrome.storage.local.remove(['dailyCompletion']);
+                    addLog('🔄 Đã reset trạng thái hoàn thành hôm nay cho toàn bộ workers. Bấm Bắt đầu để chạy lại!', 'info');
+                    sendResponse({ success: true });
+                } catch (e) {
+                    sendResponse({ success: false, error: e.message });
+                }
+                break;
+
             case 'WORKER_RESUMED':
                 addLog("✅ Workers đã tự động resume thành công", "success");
                 sendResponse({ success: true });
@@ -455,13 +540,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
             case 'LOAD_MINES':
                 try {
-                    const mineTabs = await findHH3DTabs();
-                    if (mineTabs.length === 0) {
+                    const mineTab = await findPreferredHH3DTab();
+                    if (!mineTab) {
                         sendResponse({ success: false, error: 'Không tìm thấy tab hoathinh3d' });
                         break;
                     }
 
-                    const mineTabId = mineTabs[0].id;
+                    const mineTabId = mineTab.id;
 
                     // Inject nếu cần
                     await injectContentScript(mineTabId);
@@ -487,10 +572,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // ============= TAB MONITORING - Auto inject khi phát hiện HH3D tab =============
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-    // Chỉ xử lý khi tab load xong
+    await readyPromise;
+
+    if (changeInfo.url) {
+        await setupSidePanel(tab);
+    }
+
+    // Chỉ xử lý inject khi tab load xong
     if (changeInfo.status !== 'complete') return;
 
-    await syncSidePanelForTab(tabId);
+    await setupSidePanel(tab);
 
     if (tab.url && isHH3DUrl(tab.url)) {
         console.log(`🌐 Phát hiện HH3D tab: ${tab.url}`);
@@ -506,7 +597,11 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         setTimeout(async () => {
             const injected = await injectContentScript(tabId);
 
-            if (injected && isRunning) {
+            if (injected && isRunning && (activeTabId === null || activeTabId === tabId)) {
+                if (activeTabId === null) {
+                    activeTabId = tabId;
+                    await saveState();
+                }
                 // Đợi thêm cho content script khởi tạo xong
                 setTimeout(async () => {
                     try {
@@ -536,12 +631,13 @@ async function initialize() {
     await checkAndResetNewDay();
 
     // Setup keep-alive alarm
-    await setupKeepAlive();
+    await setupKeepAlive(isRunning);
 
-    // Scan tất cả tab hiện tại để inject content script
+    // Scan tất cả tab hiện tại để setup side panel và inject content script
     try {
         const allTabs = await chrome.tabs.query({});
         for (const tab of allTabs) {
+            await setupSidePanel(tab);
             if (tab.url && isHH3DUrl(tab.url)) {
                 console.log(`🌐 Found existing HH3D tab: ${tab.url}`);
                 await saveDetectedDomain(new URL(tab.url).origin);
@@ -561,4 +657,4 @@ async function initialize() {
 }
 
 // Run initialization
-initialize();
+const readyPromise = initialize();
